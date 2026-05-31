@@ -117,13 +117,24 @@ done
 
 # Node/npm para herramientas de análisis
 if command -v node &>/dev/null && command -v npm &>/dev/null; then
-  ok "node + npm (lighthouse, axe-core, pa11y, htmlhint disponibles)"
+  ok "node + npm (lighthouse, axe-core, pa11y, htmlhint, screenshots disponibles)"
 else
-  warn "node/npm no encontrado — herramientas de análisis avanzado no disponibles"
+  warn "node/npm no encontrado — Lighthouse, screenshots y análisis WCAG no disponibles"
   case "$OS_TYPE" in
     macos)   echo -e "    Instala: ${CYAN}brew install node${RESET} o https://nodejs.org" ;;
     windows) echo -e "    Instala: ${CYAN}https://nodejs.org${RESET}" ;;
     linux)   echo -e "    Instala: ${CYAN}sudo apt install nodejs npm${RESET}" ;;
+  esac
+fi
+
+# webanalyze — detección de stack tecnológico (Wappalyzer fingerprints)
+if command -v webanalyze &>/dev/null; then
+  ok "webanalyze (stack tecnológico extendido disponible)"
+else
+  case "$OS_TYPE" in
+    macos)   warn "webanalyze — go install github.com/rverton/webanalyze/cmd/webanalyze@latest  (o: brew install go)" ;;
+    linux)   warn "webanalyze — go install github.com/rverton/webanalyze/cmd/webanalyze@latest" ;;
+    windows) warn "webanalyze — no disponible en Git Bash (se usará fingerprinting básico)" ;;
   esac
 fi
 
@@ -221,9 +232,14 @@ echo -e "${BOLD}${GREEN}╚═════════════════�
 echo ""
 echo -e "  ${BOLD}Uso en terminal:${RESET}"
 echo -e "    ${CYAN}homium-audit https://ejemplo.com${RESET}"
+echo -e "    ${CYAN}homium-audit https://ejemplo.com --sector ecommerce${RESET}"
+echo -e "    ${CYAN}homium-audit https://ejemplo.com --dimensions seo,performance${RESET}"
 echo ""
 echo -e "  ${BOLD}Uso en Claude Code:${RESET}"
 echo -e "    ${CYAN}/homium-audit https://ejemplo.com${RESET}"
+echo ""
+echo -e "  ${BOLD}Actualizar en el futuro:${RESET}"
+echo -e "    ${CYAN}homium-audit --update${RESET}"
 echo ""
 echo -e "  ${BOLD}Reportes en:${RESET} ${CYAN}~/audits/${RESET}"
 echo ""
