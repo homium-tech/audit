@@ -48,7 +48,7 @@ HTMLHINT_CMD=$(resolve_cmd "htmlhint" "htmlhint")
 SSLCHECK_CMD=$(resolve_cmd "ssl-checker" "ssl-checker")
 
 # ─── Usage ───────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.2.1"
 
 usage() {
   echo -e "${BOLD}homium-audit${RESET} v${SCRIPT_VERSION} — Auditoría profesional de sitios web"
@@ -1803,7 +1803,7 @@ fi
 
 ---
 
-*[homium-audit](https://github.com/homium-tech/audit) v1.2.0 · ${DATE_HUMAN}*
+*[homium-audit](https://github.com/homium-tech/audit) v${SCRIPT_VERSION} · ${DATE_HUMAN}*
 MDEOF
 }
 
