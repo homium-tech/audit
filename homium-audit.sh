@@ -24,8 +24,10 @@ TMPDIR_AUDIT=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_AUDIT"' EXIT
 
 DATA_FILE="${TMPDIR_AUDIT}/audit_data.json"
-LH_JSON="${TMPDIR_AUDIT}/lighthouse.json"
-LH_DONE=false
+LH_JSON_MOBILE="${TMPDIR_AUDIT}/lighthouse-mobile.json"
+LH_JSON_DESKTOP="${TMPDIR_AUDIT}/lighthouse-desktop.json"
+LH_DONE_MOBILE=false
+LH_DONE_DESKTOP=false
 
 # ─── Resolver herramientas opcionales ─────────────────────────────────────────
 resolve_cmd() {
@@ -46,32 +48,64 @@ HTMLHINT_CMD=$(resolve_cmd "htmlhint" "htmlhint")
 SSLCHECK_CMD=$(resolve_cmd "ssl-checker" "ssl-checker")
 
 # ─── Usage ───────────────────────────────────────────────────────────────────
+SCRIPT_VERSION="1.2.0"
+
 usage() {
-  echo -e "${BOLD}homium-audit${RESET} — Auditoría profesional de sitios web"
+  echo -e "${BOLD}homium-audit${RESET} v${SCRIPT_VERSION} — Auditoría profesional de sitios web"
   echo -e "  ${CYAN}Uso:${RESET} homium-audit <URL> [opciones]"
   echo -e "  ${CYAN}Opciones:${RESET}"
-  echo -e "    --output <dir>    Directorio de salida (default: ~/audits)"
-  echo -e "    --compare <file>  Comparar con reporte anterior"
-  echo -e "    --quiet           Solo errores críticos en stdout"
-  echo -e "    --help            Muestra esta ayuda"
+  echo -e "    --output <dir>         Directorio de salida (default: ~/audits)"
+  echo -e "    --compare <file>       Comparar con reporte anterior"
+  echo -e "    --dimensions <lista>   Solo analizar ciertas dimensiones (ej: seo,performance,seguridad)"
+  echo -e "    --sector <tipo>        Sector del sitio: ecommerce|saas|blog|landing|portfolio"
+  echo -e "    --threshold <score>    Exit 1 si score global < valor (útil en CI/CD)"
+  echo -e "    --quiet                Solo errores críticos en stdout"
+  echo -e "    --version              Muestra la versión instalada"
+  echo -e "    --update               Actualiza homium-audit a la última versión"
+  echo -e "    --help                 Muestra esta ayuda"
+  echo -e ""
+  echo -e "  ${CYAN}Dimensiones disponibles:${RESET} performance, seo, accesibilidad, seguridad,"
+  echo -e "    ciberseguridad, calidad, diseno, ux"
   exit 0
 }
 
 # ─── Argument Parsing ─────────────────────────────────────────────────────────
 URL=""; OUTPUT_DIR="$AUDIT_DIR"; COMPARE_FILE=""; QUIET=false
+DIMENSIONS=""; SECTOR=""; THRESHOLD=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --help|-h)    usage ;;
-    --output)     OUTPUT_DIR="$2"; shift 2 ;;
-    --compare)    COMPARE_FILE="$2"; shift 2 ;;
-    --quiet)      QUIET=true; shift ;;
-    http*)        URL="$1"; shift ;;
-    *)            echo -e "${RED}Opción desconocida: $1${RESET}"; exit 1 ;;
+    --help|-h)       usage ;;
+    --version|-v)    echo "homium-audit v${SCRIPT_VERSION}"; exit 0 ;;
+    --update)
+      echo -e "${CYAN}Actualizando homium-audit...${RESET}"
+      INSTALL_DIR="${HOME}/.homium-audit"
+      if curl -sSL "https://raw.githubusercontent.com/homium-tech/audit/main/homium-audit.sh" \
+          -o "${INSTALL_DIR}/homium-audit.sh" 2>/dev/null; then
+        chmod +x "${INSTALL_DIR}/homium-audit.sh"
+        echo -e "${GREEN}✓ Actualizado correctamente en ${INSTALL_DIR}/homium-audit.sh${RESET}"
+      else
+        echo -e "${RED}✗ No se pudo actualizar. Verifica tu conexión.${RESET}" >&2; exit 1
+      fi
+      exit 0 ;;
+    --output)        OUTPUT_DIR="$2"; shift 2 ;;
+    --compare)       COMPARE_FILE="$2"; shift 2 ;;
+    --dimensions)    DIMENSIONS="$2"; shift 2 ;;
+    --sector)        SECTOR="$2"; shift 2 ;;
+    --threshold)     THRESHOLD="$2"; shift 2 ;;
+    --quiet)         QUIET=true; shift ;;
+    http*)           URL="$1"; shift ;;
+    *)               echo -e "${RED}Opción desconocida: $1${RESET}"; usage ;;
   esac
 done
 
 [[ -z "$URL" ]] && { echo -e "${RED}Error: Se requiere una URL.${RESET}"; usage; }
+
+# should_run: true si la dimensión está en --dimensions (o si no hay filtro)
+should_run() {
+  [[ -z "$DIMENSIONS" ]] && return 0
+  echo ",$DIMENSIONS," | grep -qi ",${1}," && return 0 || return 1
+}
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 log()  { [[ "$QUIET" == false ]] && echo -e "${DIM}[audit]${RESET} $*" || true; }
@@ -151,20 +185,55 @@ fetch_headers() {
     "$1" 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo ""
 }
 
+# ─── Timeout wrapper (GNU timeout en Linux, perl en macOS/Windows) ────────────
+_timeout() {
+  local t="$1"; shift
+  if command -v timeout &>/dev/null; then
+    timeout "$t" "$@"
+  else
+    perl -e "alarm $t; exec @ARGV" -- "$@"
+  fi
+}
+
 # ─── TLS helpers ──────────────────────────────────────────────────────────────
+ssl_full_info() {
+  local domain="$1"
+  local raw
+  raw=$(echo | _timeout "$TIMEOUT" openssl s_client \
+    -connect "${domain}:443" -servername "$domain" 2>/dev/null </dev/null) || { return 1; }
+
+  local cert
+  cert=$(echo "$raw" | openssl x509 -noout \
+    -enddate -issuer -subject -ext subjectAltName 2>/dev/null) || cert=""
+
+  SSL_EXPIRY_DATE=$(echo "$cert" | grep "notAfter" | sed 's/notAfter=//' || echo "")
+  SSL_ISSUER=$(echo "$cert" | grep "issuer=" \
+    | sed 's/.*O = \([^,]*\).*/\1/' | head -1 | xargs 2>/dev/null || echo "Desconocido")
+  SSL_SUBJECT=$(echo "$cert" | grep "subject=" \
+    | sed 's/.*CN = \([^,]*\).*/\1/' | head -1 | xargs 2>/dev/null || echo "Desconocido")
+  SSL_SAN=$(echo "$cert" | grep -oE 'DNS:[^,]+' | tr '\n' ' ' | sed 's/DNS://g' || echo "")
+  SSL_PROTOCOL=$(echo "$raw" | grep "Protocol" | awk '{print $3}' | head -1 || echo "Desconocido")
+  SSL_CIPHER=$(echo "$raw"   | grep "Cipher"   | awk '{print $5}' | head -1 || echo "Desconocido")
+
+  if [[ -n "$SSL_EXPIRY_DATE" ]]; then
+    local exp_epoch now_epoch
+    exp_epoch=$(date -j -f "%b %d %T %Y %Z" "$SSL_EXPIRY_DATE" +%s 2>/dev/null \
+      || date -d "$SSL_EXPIRY_DATE" +%s 2>/dev/null) || exp_epoch=""
+    if [[ -n "$exp_epoch" ]]; then
+      now_epoch=$(date +%s)
+      SSL_DAYS_LEFT=$(( (exp_epoch - now_epoch) / 86400 ))
+    else
+      SSL_DAYS_LEFT=-1
+    fi
+  else
+    SSL_DAYS_LEFT=-1
+  fi
+}
+
 ssl_days_remaining() {
   local domain="$1"
-  local expiry_date
-  expiry_date=$(echo | _timeout "$TIMEOUT" openssl s_client \
-    -connect "${domain}:443" -servername "$domain" 2>/dev/null </dev/null \
-    | openssl x509 -noout -enddate 2>/dev/null \
-    | sed 's/notAfter=//') || { echo "-1"; return; }
-  [[ -z "$expiry_date" ]] && { echo "-1"; return; }
-  local exp_epoch now_epoch
-  exp_epoch=$(date -j -f "%b %d %T %Y %Z" "$expiry_date" +%s 2>/dev/null \
-    || date -d "$expiry_date" +%s 2>/dev/null) || { echo "-1"; return; }
-  now_epoch=$(date +%s)
-  echo $(( (exp_epoch - now_epoch) / 86400 ))
+  ssl_full_info "$domain" 2>/dev/null || true
+  echo "${SSL_DAYS_LEFT:--1}"
 }
 
 # ─── Score storage — variables simples (bash 3/4/5 compatible) ──────────────
@@ -182,27 +251,51 @@ get_score() {
   eval "echo "\${SCORE_S_${key}:-0}""
 }
 
-# ─── Lighthouse — una sola ejecución ─────────────────────────────────────────
-run_lighthouse_once() {
-  [[ "$LH_DONE" == true ]] && return 0
+# ─── Lighthouse — mobile + desktop ───────────────────────────────────────────
+run_lighthouse() {
   [[ -z "$LH_CMD" ]] && return 1
-  info "Ejecutando Lighthouse (una pasada: performance, seo, accessibility, best-practices)..."
-  $LH_CMD "$URL" \
-    --output=json \
-    --output-path="$LH_JSON" \
-    --only-categories=performance,seo,accessibility,best-practices \
-    --chrome-flags="--headless --no-sandbox --disable-gpu" \
-    --quiet 2>/dev/null && LH_DONE=true || true
-  [[ "$LH_DONE" == true ]] && ok "Lighthouse completado" || warn "Lighthouse no pudo completar el análisis"
+  local cats="--only-categories=performance,seo,accessibility,best-practices"
+  local flags="--chrome-flags=--headless --no-sandbox --disable-gpu"
+
+  if [[ "$LH_DONE_MOBILE" != true ]]; then
+    info "Ejecutando Lighthouse Mobile..."
+    $LH_CMD "$URL" --output=json --output-path="$LH_JSON_MOBILE" \
+      $cats --chrome-flags="--headless --no-sandbox --disable-gpu" \
+      --quiet 2>/dev/null && LH_DONE_MOBILE=true || true
+    [[ "$LH_DONE_MOBILE" == true ]] && ok "Lighthouse Mobile completado" || warn "Lighthouse Mobile no pudo completar"
+  fi
+
+  if [[ "$LH_DONE_DESKTOP" != true ]]; then
+    info "Ejecutando Lighthouse Desktop..."
+    $LH_CMD "$URL" --output=json --output-path="$LH_JSON_DESKTOP" \
+      $cats --preset=desktop \
+      --chrome-flags="--headless --no-sandbox --disable-gpu" \
+      --quiet 2>/dev/null && LH_DONE_DESKTOP=true || true
+    [[ "$LH_DONE_DESKTOP" == true ]] && ok "Lighthouse Desktop completado" || warn "Lighthouse Desktop no pudo completar"
+  fi
 }
 
 lh_score() {
-  local key="$1"
-  [[ "$LH_DONE" != true ]] && { echo ""; return; }
+  local key="$1" device="${2:-mobile}"
+  local json_file
+  [[ "$device" == "desktop" ]] && json_file="$LH_JSON_DESKTOP" || json_file="$LH_JSON_MOBILE"
+  local done_flag
+  [[ "$device" == "desktop" ]] && done_flag="$LH_DONE_DESKTOP" || done_flag="$LH_DONE_MOBILE"
+  [[ "$done_flag" != true ]] && { echo ""; return; }
+  [[ ! -f "$json_file" ]] && { echo ""; return; }
   command -v jq &>/dev/null || { echo ""; return; }
   local raw
-  raw=$(jq ".categories[\"${key}\"].score // 0" "$LH_JSON" 2>/dev/null) || { echo ""; return; }
+  raw=$(jq ".categories[\"${key}\"].score // 0" "$json_file" 2>/dev/null) || { echo ""; return; }
   awk "BEGIN{printf \"%d\", ${raw:-0} * 100}"
+}
+
+lh_metric() {
+  local audit="$1" device="${2:-mobile}"
+  local json_file
+  [[ "$device" == "desktop" ]] && json_file="$LH_JSON_DESKTOP" || json_file="$LH_JSON_MOBILE"
+  [[ ! -f "$json_file" ]] && { echo "N/A"; return; }
+  command -v jq &>/dev/null || { echo "N/A"; return; }
+  jq -r ".audits[\"${audit}\"].displayValue // \"N/A\"" "$json_file" 2>/dev/null | tr -d '\n' || echo "N/A"
 }
 
 # ─── Dependency check ─────────────────────────────────────────────────────────
@@ -242,6 +335,7 @@ lookup_hosting_domain() {
 
   SEC_HOST_PROVIDER="Desconocido"; SEC_HOST_COUNTRY="Desconocido"
   SEC_HOST_CITY="Desconocido"; SEC_HOST_ASN="Desconocido"; SEC_HOST_ORG="Desconocido"
+  SEC_HOST_RANGE="Desconocido"; SEC_HOST_ABUSE="Desconocido"
 
   if [[ "$SEC_HOST_IP" != "No resuelto" ]]; then
     local geo
@@ -250,8 +344,12 @@ lookup_hosting_domain() {
       SEC_HOST_COUNTRY=$(echo "$geo" | jq -r '.country // "Desconocido"' 2>/dev/null || echo "Desconocido")
       SEC_HOST_CITY=$(echo    "$geo" | jq -r '.city    // "Desconocido"' 2>/dev/null || echo "Desconocido")
       SEC_HOST_ORG=$(echo     "$geo" | jq -r '.org     // "Desconocido"' 2>/dev/null || echo "Desconocido")
+      SEC_HOST_RANGE=$(echo   "$geo" | jq -r '.ip      // "Desconocido"' 2>/dev/null || echo "Desconocido")
       SEC_HOST_ASN=$(echo "$SEC_HOST_ORG" | grep -oE '^AS[0-9]+' || echo "Desconocido")
       SEC_HOST_PROVIDER=$(echo "$SEC_HOST_ORG" | sed 's/^AS[0-9]* //')
+      local abuse_json
+      abuse_json=$(curl -sSL --max-time 8 "https://ipinfo.io/${SEC_HOST_IP}/abuse" 2>/dev/null) || abuse_json=""
+      [[ -n "$abuse_json" ]] && SEC_HOST_ABUSE=$(echo "$abuse_json" | jq -r '.email // "Desconocido"' 2>/dev/null || echo "Desconocido") || true
     elif [[ -n "$geo" ]]; then
       SEC_HOST_COUNTRY=$(echo "$geo" | grep -o '"country":"[^"]*"' | cut -d'"' -f4 || echo "Desconocido")
       SEC_HOST_CITY=$(echo    "$geo" | grep -o '"city":"[^"]*"'    | cut -d'"' -f4 || echo "Desconocido")
@@ -296,11 +394,15 @@ lookup_hosting_domain() {
       SEC_DOM_EXPIRES=$(echo   "$w" | grep -iE "expir"             | head -1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || echo "")
       SEC_DOM_UPDATED=$(echo   "$w" | grep -iE "updated"           | head -1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || echo "")
       SEC_DOM_NAMESERVERS=$(echo "$w" | grep -iE "^name server:"   | sed 's/[Nn]ame [Ss]erver:\s*//' | tr '\n' ',' | sed 's/,$//' | xargs || echo "Desconocido")
+      SEC_DOM_STATUS=$(echo "$w" | grep -iE "^domain status:" | head -3 | sed 's/[Dd]omain [Ss]tatus:\s*//' | tr '\n' '·' | sed 's/·$//' | xargs || echo "Desconocido")
+      SEC_DOM_ABUSE_EMAIL=$(echo "$w" | grep -iE "registrar abuse contact email" | head -1 | sed 's/.*:\s*//' | xargs || echo "Desconocido")
       echo "$w" | grep -qiE "privacy|redacted|protected|proxy" && SEC_DOM_PRIVACY=true || true
+      echo "$w" | grep -qiE "dnssec.*signed|signedDelegation" && SEC_DOM_DNSSEC=true || SEC_DOM_DNSSEC=false
       [[ -z "$SEC_DOM_REGISTRAR"   ]] && SEC_DOM_REGISTRAR="Desconocido"
       [[ -z "$SEC_DOM_CREATED"     ]] && SEC_DOM_CREATED="Desconocido"
       [[ -z "$SEC_DOM_EXPIRES"     ]] && SEC_DOM_EXPIRES="Desconocido"
       [[ -z "$SEC_DOM_NAMESERVERS" ]] && SEC_DOM_NAMESERVERS="Desconocido"
+      [[ -z "$SEC_DOM_STATUS"      ]] && SEC_DOM_STATUS="Desconocido"
 
       if [[ "$SEC_DOM_EXPIRES" != "Desconocido" ]]; then
         local exp_epoch now_epoch
@@ -338,7 +440,7 @@ analyze_performance() {
 
   info "Midiendo peso de página..."
   local page_size
-  page_size=$(fetch_url "$URL" | wc -c 2>/dev/null) || page_size=0
+  page_size=$(echo "$HTML_CACHE" | wc -c 2>/dev/null) || page_size=0
   PERF_SIZE_KB=$(( ${page_size:-0} / 1024 ))
   (( PERF_SIZE_KB > 500 )) && score=$((score-20)) || true
   (( PERF_SIZE_KB > 200 && PERF_SIZE_KB <= 500 )) && score=$((score-10)) || true
@@ -357,9 +459,49 @@ analyze_performance() {
   PERF_COMPRESSION="${enc_header:-Sin compresión}"
   [[ -z "$enc_header" ]] && score=$((score-10)) || true
 
-  run_lighthouse_once
-  PERF_LH_SCORE=$(lh_score "performance")
-  [[ -n "$PERF_LH_SCORE" ]] && score=$(( (score + PERF_LH_SCORE) / 2 )) || true
+  info "Midiendo TTFB y cadena de redirects..."
+  local ttfb redirects
+  ttfb=$(curl -sSLo /dev/null --max-time "$TIMEOUT" \
+    --user-agent "Mozilla/5.0 (compatible; homium-audit/1.2)" \
+    -w "%{time_starttransfer}" "$URL" 2>/dev/null \
+    | awk '{printf "%d", $1*1000}') || ttfb=0
+  PERF_TTFB_MS=${ttfb:-0}
+  redirects=$(curl -sSLo /dev/null --max-time "$TIMEOUT" \
+    --user-agent "Mozilla/5.0 (compatible; homium-audit/1.2)" \
+    -w "%{num_redirects}" "$URL" 2>/dev/null) || redirects=0
+  PERF_REDIRECTS=${redirects:-0}
+  (( PERF_TTFB_MS > 600 )) && score=$((score-10)) || true
+  (( PERF_REDIRECTS > 2  )) && score=$((score-5))  || true
+
+  info "Detectando CDN..."
+  local resp_headers
+  resp_headers=$(fetch_headers "$URL")
+  PERF_CDN="No detectado"
+  echo "$resp_headers" | grep -qi "cf-ray"           && PERF_CDN="Cloudflare"   || true
+  echo "$resp_headers" | grep -qi "x-amz-cf-id"      && PERF_CDN="CloudFront"   || true
+  echo "$resp_headers" | grep -qi "x-served-by"      && PERF_CDN="Fastly"       || true
+  echo "$resp_headers" | grep -qi "x-cache.*akamai\|x-akamai" && PERF_CDN="Akamai" || true
+  echo "$resp_headers" | grep -qi "x-varnish"        && PERF_CDN="Varnish"      || true
+  echo "$resp_headers" | grep -qi "x-cdn\|keycdn"    && PERF_CDN="KeyCDN"       || true
+
+  info "Contando recursos externos..."
+  PERF_JS_COUNT=$(echo "$HTML_CACHE" | grep -ic 'src="[^"]*\.js' 2>/dev/null | tr -d '[:space:]') || PERF_JS_COUNT=0
+  PERF_CSS_COUNT=$(echo "$HTML_CACHE" | grep -ic 'href="[^"]*\.css' 2>/dev/null | tr -d '[:space:]') || PERF_CSS_COUNT=0
+  PERF_IMG_COUNT=$(echo "$HTML_CACHE" | grep -ic '<img' 2>/dev/null | tr -d '[:space:]') || PERF_IMG_COUNT=0
+  PERF_JS_COUNT=${PERF_JS_COUNT:-0}; PERF_CSS_COUNT=${PERF_CSS_COUNT:-0}; PERF_IMG_COUNT=${PERF_IMG_COUNT:-0}
+  (( PERF_JS_COUNT > 20  )) && score=$((score-5)) || true
+  (( PERF_CSS_COUNT > 10 )) && score=$((score-5)) || true
+
+  run_lighthouse
+  PERF_LH_MOBILE=$(lh_score "performance" "mobile")
+  PERF_LH_DESKTOP=$(lh_score "performance" "desktop")
+  if [[ -n "$PERF_LH_MOBILE" && -n "$PERF_LH_DESKTOP" ]]; then
+    score=$(( (score + PERF_LH_MOBILE + PERF_LH_DESKTOP) / 3 ))
+  elif [[ -n "$PERF_LH_MOBILE" ]]; then
+    score=$(( (score + PERF_LH_MOBILE) / 2 ))
+  elif [[ -n "$PERF_LH_DESKTOP" ]]; then
+    score=$(( (score + PERF_LH_DESKTOP) / 2 ))
+  fi
 
   (( score < 0 )) && score=0; (( score > 100 )) && score=100
   set_score "performance" "$score"; SCORE_PERFORMANCE=$score
@@ -371,7 +513,7 @@ analyze_calidad_tecnica() {
   step "Analizando Calidad Técnica"
   local score=100
   local html
-  html=$(fetch_url "$URL")
+  html="$HTML_CACHE"
 
   CT_DOCTYPE=false; CT_LANG=false; CT_CHARSET=false; CT_VIEWPORT=false
   CT_TITLE=false;   CT_CANONICAL=false
@@ -395,6 +537,17 @@ analyze_calidad_tecnica() {
   CT_INLINE_SCRIPTS=${CT_INLINE_SCRIPTS:-0}; CT_INLINE_STYLES=${CT_INLINE_STYLES:-0}
   (( CT_INLINE_SCRIPTS > 5  )) && score=$((score-10)) || true
   (( CT_INLINE_STYLES  > 10 )) && score=$((score-5))  || true
+
+  CT_DEPRECATED=$(echo "$html" | grep -icE '<(center|font|marquee|blink|frame|frameset|noframes|applet|basefont|big|strike|tt|u)\b' 2>/dev/null | tr -d '[:space:]') || CT_DEPRECATED=0
+  CT_DEPRECATED=${CT_DEPRECATED:-0}
+  (( CT_DEPRECATED > 0 )) && score=$((score-10)) || true
+
+  CT_MIXED_CONTENT=false
+  echo "$html" | grep -qiE 'src="http://|href="http://' && CT_MIXED_CONTENT=true || true
+  [[ "$CT_MIXED_CONTENT" == true ]] && score=$((score-15)) || true
+
+  CT_PWA_MANIFEST=false; echo "$html" | grep -qi 'rel="manifest"' && CT_PWA_MANIFEST=true || true
+  CT_SERVICE_WORKER=false; echo "$html" | grep -qi 'serviceWorker\|sw\.js' && CT_SERVICE_WORKER=true || true
 
   CT_BROKEN_LINKS="N/A"
   if [[ -n "$HTMLHINT_CMD" ]]; then
@@ -420,9 +573,20 @@ analyze_calidad_tecnica() {
 # ─── DIMENSION 3: SEO ─────────────────────────────────────────────────────────
 analyze_seo() {
   step "Analizando SEO"
+
+  info "Extrayendo logo e imagen del sitio..."
+  SITE_OG_IMAGE=$(echo "$HTML_CACHE" | grep -i 'property="og:image"' \
+    | sed 's/.*content="\([^"]*\)".*/\1/' | head -1 | xargs 2>/dev/null) || SITE_OG_IMAGE=""
+  SITE_FAVICON=$(echo "$HTML_CACHE" | grep -iE 'rel="(icon|shortcut icon)"' \
+    | sed 's/.*href="\([^"]*\)".*/\1/' | head -1 | xargs 2>/dev/null) || SITE_FAVICON=""
+  # Normalizar favicon relativo a URL absoluta
+  if [[ -n "$SITE_FAVICON" && "$SITE_FAVICON" != http* ]]; then
+    local base_url="${URL%/}"
+    [[ "$SITE_FAVICON" == /* ]] && SITE_FAVICON="${base_url}${SITE_FAVICON}" || SITE_FAVICON="${base_url}/${SITE_FAVICON}"
+  fi
   local score=100
   local html
-  html=$(fetch_url "$URL")
+  html="$HTML_CACHE"
 
   local title
   title=$(echo "$html" | grep -i '<title>' | sed 's/.*<title>\(.*\)<\/title>.*/\1/' | head -1 | xargs 2>/dev/null) || title=""
@@ -449,15 +613,38 @@ analyze_seo() {
   [[ "$SEO_OG"     == false ]] && score=$((score-10)) || true
   [[ "$SEO_SCHEMA" == false ]] && score=$((score-5))  || true
 
+  SEO_TWITTER_CARD=false; echo "$html" | grep -qi 'name="twitter:card"' && SEO_TWITTER_CARD=true || true
+  SEO_HREFLANG=false;     echo "$html" | grep -qi 'hreflang='            && SEO_HREFLANG=true    || true
+  local meta_robots
+  meta_robots=$(echo "$html" | grep -i 'name="robots"' | sed 's/.*content="\([^"]*\)".*/\1/' | head -1 | xargs 2>/dev/null) || meta_robots=""
+  SEO_META_ROBOTS="${meta_robots:-No definido}"
+  SEO_H2_COUNT=$(echo "$html" | grep -ic '<h2' 2>/dev/null | tr -d '[:space:]') || SEO_H2_COUNT=0
+  SEO_H3_COUNT=$(echo "$html" | grep -ic '<h3' 2>/dev/null | tr -d '[:space:]') || SEO_H3_COUNT=0
+  SEO_H2_COUNT=${SEO_H2_COUNT:-0}; SEO_H3_COUNT=${SEO_H3_COUNT:-0}
+  local schema_types
+  schema_types=$(echo "$html" | grep -oE '"@type"\s*:\s*"[^"]+"' | sed 's/"@type"\s*:\s*"\([^"]*\)"/\1/' | sort -u | tr '\n' ', ' | sed 's/,$//' || echo "")
+  SEO_SCHEMA_TYPES="${schema_types:-N/A}"
+  local int_links ext_links
+  int_links=$(echo "$html" | grep -oiE 'href="/' | wc -l | tr -d '[:space:]') || int_links=0
+  ext_links=$(echo "$html"  | grep -oiE 'href="http' | wc -l | tr -d '[:space:]') || ext_links=0
+  SEO_INT_LINKS=${int_links:-0}; SEO_EXT_LINKS=${ext_links:-0}
+
   local base="${URL%/}"
   SEO_ROBOTS=$(http_status "${base}/robots.txt")
   SEO_SITEMAP=$(http_status "${base}/sitemap.xml")
   [[ "$SEO_ROBOTS"  != "200" ]] && score=$((score-10)) || true
   [[ "$SEO_SITEMAP" != "200" ]] && score=$((score-10)) || true
 
-  run_lighthouse_once
-  SEO_LH_SCORE=$(lh_score "seo")
-  [[ -n "$SEO_LH_SCORE" ]] && score=$(( (score + SEO_LH_SCORE) / 2 )) || true
+  run_lighthouse
+  SEO_LH_MOBILE=$(lh_score "seo" "mobile")
+  SEO_LH_DESKTOP=$(lh_score "seo" "desktop")
+  if [[ -n "$SEO_LH_MOBILE" && -n "$SEO_LH_DESKTOP" ]]; then
+    score=$(( (score + SEO_LH_MOBILE + SEO_LH_DESKTOP) / 3 ))
+  elif [[ -n "$SEO_LH_MOBILE" ]]; then
+    score=$(( (score + SEO_LH_MOBILE) / 2 ))
+  elif [[ -n "$SEO_LH_DESKTOP" ]]; then
+    score=$(( (score + SEO_LH_DESKTOP) / 2 ))
+  fi
 
   (( score < 0 )) && score=0; (( score > 100 )) && score=100
   set_score "seo" "$score"; SCORE_SEO=$score
@@ -469,7 +656,7 @@ analyze_accesibilidad() {
   step "Analizando Accesibilidad"
   local score=100
   local html
-  html=$(fetch_url "$URL")
+  html="$HTML_CACHE"
 
   local imgs_total imgs_no_alt
   imgs_total=$(echo "$html" | grep -ic '<img' 2>/dev/null | tr -d '[:space:]') || imgs_total=0
@@ -494,9 +681,16 @@ analyze_accesibilidad() {
 
   echo "$html" | grep -qi '<html[^>]*lang=' || score=$((score-10)) || true
 
-  run_lighthouse_once
-  ACC_LH_SCORE=$(lh_score "accessibility")
-  [[ -n "$ACC_LH_SCORE" ]] && score=$(( (score + ACC_LH_SCORE) / 2 )) || true
+  run_lighthouse
+  ACC_LH_MOBILE=$(lh_score "accessibility" "mobile")
+  ACC_LH_DESKTOP=$(lh_score "accessibility" "desktop")
+  if [[ -n "$ACC_LH_MOBILE" && -n "$ACC_LH_DESKTOP" ]]; then
+    score=$(( (score + ACC_LH_MOBILE + ACC_LH_DESKTOP) / 3 ))
+  elif [[ -n "$ACC_LH_MOBILE" ]]; then
+    score=$(( (score + ACC_LH_MOBILE) / 2 ))
+  elif [[ -n "$ACC_LH_DESKTOP" ]]; then
+    score=$(( (score + ACC_LH_DESKTOP) / 2 ))
+  fi
 
   ACC_AXE_VIOLATIONS=0; ACC_AXE_SERIOUS=0
   if [[ -n "$AXE_CMD" ]]; then
@@ -550,12 +744,44 @@ analyze_seguridad() {
   SEC_RP=false;   echo "$headers" | grep -q "referrer-policy"           && SEC_RP=true   || true
   SEC_PER=false;  echo "$headers" | grep -q "permissions-policy"        && SEC_PER=true  || true
 
+  # HSTS max-age value
+  SEC_HSTS_MAXAGE=$(echo "$headers" | grep "strict-transport-security" \
+    | grep -oE 'max-age=[0-9]+' | grep -oE '[0-9]+' | head -1 || echo "0")
+  SEC_HSTS_MAXAGE=${SEC_HSTS_MAXAGE:-0}
+
+  # CSP quality — detectar directivas inseguras
+  SEC_CSP_UNSAFE=false
+  echo "$headers" | grep "content-security-policy" | grep -qi "unsafe-inline\|unsafe-eval" \
+    && SEC_CSP_UNSAFE=true || true
+
+  # SRI en scripts externos
+  SEC_SRI=false; echo "$HTML_CACHE" | grep -qi 'integrity="sha' && SEC_SRI=true || true
+
+  # CAA y MX DNS records
+  SEC_CAA="AUSENTE"; SEC_MX="AUSENTE"
+  local caa_raw mx_raw
+  caa_raw=$(if command -v dig &>/dev/null; then
+    dig CAA "$domain" +short 2>/dev/null | head -1
+  else
+    curl -sSL --max-time 8 "https://dns.google/resolve?name=${domain}&type=CAA" 2>/dev/null \
+      | perl -nle 'print $1 if /"data":"([^"]+)"/' | head -1
+  fi || echo "")
+  mx_raw=$(if command -v dig &>/dev/null; then
+    dig MX "$domain" +short 2>/dev/null | head -1
+  else
+    curl -sSL --max-time 8 "https://dns.google/resolve?name=${domain}&type=MX" 2>/dev/null \
+      | perl -nle 'print $1 if /"data":"([^"]+)"/' | head -1
+  fi || echo "")
+  [[ -n "$caa_raw" ]] && SEC_CAA="$caa_raw" || true
+  [[ -n "$mx_raw"  ]] && SEC_MX="$mx_raw"   || true
+
   [[ "$SEC_HSTS" == false ]] && score=$((score-20)) || true
   [[ "$SEC_CSP"  == false ]] && score=$((score-20)) || true
   [[ "$SEC_XCTO" == false ]] && score=$((score-15)) || true
   [[ "$SEC_XFO"  == false ]] && score=$((score-15)) || true
   [[ "$SEC_RP"   == false ]] && score=$((score-10)) || true
   [[ "$SEC_PER"  == false ]] && score=$((score-10)) || true
+  [[ "$SEC_CSP_UNSAFE" == true ]] && score=$((score-10)) || true
 
   local http_code
   http_code=$(http_status "http://${domain}")
@@ -613,7 +839,7 @@ analyze_ciberseguridad() {
   echo "$CYBER_SERVER"    | grep -qE "[0-9]\.|apache|nginx|iis|php" && score=$((score-15)) || true
   [[ -n "$powered_hdr" ]] && score=$((score-10)) || true
 
-  local dirs=("/admin" "/backup" "/.git" "/config" "/uploads")
+  local dirs=("/admin" "/backup" "/.git" "/config" "/uploads" "/.env" "/wp-admin" "/phpinfo.php" "/swagger" "/api-docs")
   CYBER_EXPOSED_DIRS=()
   for d in "${dirs[@]}"; do
     local st; st=$(http_status "${URL%/}${d}")
@@ -621,9 +847,16 @@ analyze_ciberseguridad() {
   done
   [[ ${#CYBER_EXPOSED_DIRS[@]} -eq 0 ]] && CYBER_EXPOSED_DIRS=("Ninguno detectado")
 
-  local sec_txt; sec_txt=$(http_status "${URL%/}/.well-known/security.txt")
-  CYBER_SEC_TXT="$sec_txt"
-  [[ "$sec_txt" != "200" ]] && score=$((score-5)) || true
+  local sec_txt_status sec_txt_contact
+  sec_txt_status=$(http_status "${URL%/}/.well-known/security.txt")
+  CYBER_SEC_TXT="$sec_txt_status"
+  if [[ "$sec_txt_status" == "200" ]]; then
+    sec_txt_contact=$(fetch_url "${URL%/}/.well-known/security.txt" | grep -i "^contact:" | head -1 | sed 's/Contact:\s*//' | xargs 2>/dev/null) || sec_txt_contact=""
+    CYBER_SEC_TXT_CONTACT="${sec_txt_contact:-No especificado}"
+  else
+    score=$((score-5))
+    CYBER_SEC_TXT_CONTACT="—"
+  fi
 
   CYBER_SPF="No verificable"; CYBER_DMARC="No verificable"
   # dig → curl DNS API fallback (funciona en Git Bash/Windows)
@@ -632,17 +865,25 @@ analyze_ciberseguridad() {
     if command -v dig &>/dev/null; then
       dig TXT "$host" +short 2>/dev/null | tr -d '"' || echo ""
     else
-      curl -sSL --max-time 10         "https://dns.google/resolve?name=${host}&type=TXT" 2>/dev/null         | perl -nle 'print $1 if /"data":"([^"]+)"/' || echo ""
+      curl -sSL --max-time 10 \
+        "https://dns.google/resolve?name=${host}&type=TXT" 2>/dev/null \
+        | perl -nle 'print $1 if /"data":"([^"]+)"/' || echo ""
     fi
   }
   spf_raw=$(dns_txt_lookup "$domain")
   dmarc_raw=$(dns_txt_lookup "_dmarc.${domain}")
-  CYBER_SPF=$(echo "$spf_raw"   | grep -i "v=spf"  | head -1 || echo "AUSENTE")
-  CYBER_DMARC=$(echo "$dmarc_raw" | grep -i "v=DMARC" | head -1 || echo "AUSENTE")
+  dkim_raw=$(dns_txt_lookup "default._domainkey.${domain}")
+  bimi_raw=$(dns_txt_lookup "default._bimi.${domain}")
+  CYBER_SPF=$(echo "$spf_raw"    | grep -i "v=spf"   | head -1 || echo "AUSENTE")
+  CYBER_DMARC=$(echo "$dmarc_raw"| grep -i "v=DMARC" | head -1 || echo "AUSENTE")
+  CYBER_DKIM=$(echo "$dkim_raw"  | grep -i "v=DKIM"  | head -1 || echo "AUSENTE")
+  CYBER_BIMI=$(echo "$bimi_raw"  | grep -i "v=BIMI"  | head -1 || echo "AUSENTE")
   [[ -z "$CYBER_SPF"   ]] && CYBER_SPF="AUSENTE"
   [[ -z "$CYBER_DMARC" ]] && CYBER_DMARC="AUSENTE"
+  [[ -z "$CYBER_DKIM"  ]] && CYBER_DKIM="AUSENTE"
   [[ "$CYBER_SPF"   == "AUSENTE" ]] && score=$((score-10)) || true
   [[ "$CYBER_DMARC" == "AUSENTE" ]] && score=$((score-10)) || true
+  [[ "$CYBER_DKIM"  == "AUSENTE" ]] && score=$((score-5))  || true
 
   (( score < 0 )) && score=0; (( score > 100 )) && score=100
   set_score "ciberseguridad" "$score"; SCORE_CIBERSEGURIDAD=$score
@@ -654,7 +895,7 @@ analyze_diseno() {
   step "Analizando Diseño"
   local score=70
   local html
-  html=$(fetch_url "$URL")
+  html="$HTML_CACHE"
 
   DIS_VIEWPORT=false; echo "$html" | grep -qi 'name="viewport"' && DIS_VIEWPORT=true || true
   [[ "$DIS_VIEWPORT" == false ]] && score=$((score-20)) || true
@@ -671,13 +912,83 @@ analyze_diseno() {
   DIS_DARK_MODE=false; echo "$html" | grep -qi "prefers-color-scheme\|color-scheme" && DIS_DARK_MODE=true || true
   [[ "$DIS_FAVICON" == false ]] && score=$((score-5)) || true
 
-  run_lighthouse_once
-  DIS_LH_SCORE=$(lh_score "best-practices")
-  [[ -n "$DIS_LH_SCORE" ]] && score=$(( (score + DIS_LH_SCORE) / 2 )) || true
+  DIS_PRINT_CSS=false;  echo "$html" | grep -qi 'media="print"'                     && DIS_PRINT_CSS=true  || true
+  DIS_FAVICON_HI=false; echo "$html" | grep -qi '192x192\|512x512\|apple-touch-icon' && DIS_FAVICON_HI=true || true
+  DIS_BREAKPOINTS=$(echo "$html" | grep -oiE '@media[^{]+' | wc -l | tr -d '[:space:]') || DIS_BREAKPOINTS=0
+  DIS_BREAKPOINTS=${DIS_BREAKPOINTS:-0}
+
+  run_lighthouse
+  DIS_LH_MOBILE=$(lh_score "best-practices" "mobile")
+  DIS_LH_DESKTOP=$(lh_score "best-practices" "desktop")
+  if [[ -n "$DIS_LH_MOBILE" && -n "$DIS_LH_DESKTOP" ]]; then
+    score=$(( (score + DIS_LH_MOBILE + DIS_LH_DESKTOP) / 3 ))
+  elif [[ -n "$DIS_LH_MOBILE" ]]; then
+    score=$(( (score + DIS_LH_MOBILE) / 2 ))
+  elif [[ -n "$DIS_LH_DESKTOP" ]]; then
+    score=$(( (score + DIS_LH_DESKTOP) / 2 ))
+  fi
 
   (( score < 0 )) && score=0; (( score > 100 )) && score=100
   set_score "diseno" "$score"; SCORE_DISENO=$score
   ok "Diseño score: $(score_color $score)"
+}
+
+# ─── Tecnología: fingerprinting bash + webanalyze opcional ───────────────────
+analyze_tecnologia() {
+  step "Detectando stack tecnológico"
+  local html="$HTML_CACHE"
+  local headers
+  headers=$(fetch_headers "$URL")
+
+  TECH_CMS="Desconocido"
+  echo "$html" | grep -qi 'wp-content\|wp-includes\|<meta[^>]*generator[^>]*WordPress' && TECH_CMS="WordPress"   || true
+  echo "$html" | grep -qi 'cdn\.shopify\.com\|Shopify\.theme'                           && TECH_CMS="Shopify"     || true
+  echo "$html" | grep -qi 'wix\.com\|X-Wix-Published-Version'                           && TECH_CMS="Wix"         || true
+  echo "$html" | grep -qi 'webflow\.io\|data-wf-site'                                   && TECH_CMS="Webflow"     || true
+  echo "$html" | grep -qi 'squarespace\.com\|Squarespace'                                && TECH_CMS="Squarespace" || true
+  echo "$html" | grep -qi 'sites\.google\.com\|<meta[^>]*generator[^>]*Drupal'          && TECH_CMS="Drupal"      || true
+  echo "$html" | grep -qi 'ghost\.io\|content=\"Ghost'                                  && TECH_CMS="Ghost"       || true
+  echo "$html" | grep -qi 'notion\.so\|notion-page'                                     && TECH_CMS="Notion"      || true
+
+  TECH_FRAMEWORK="Desconocido"
+  echo "$html" | grep -qi '__NEXT_DATA__\|/_next/'                                       && TECH_FRAMEWORK="Next.js"  || true
+  echo "$html" | grep -qi '__nuxt\|/_nuxt/'                                              && TECH_FRAMEWORK="Nuxt"     || true
+  echo "$html" | grep -qi 'data-reactroot\|__REACT_DEVTOOLS'                            && TECH_FRAMEWORK="React"    || true
+  echo "$html" | grep -qi 'data-v-\|vue\.config'                                        && TECH_FRAMEWORK="Vue"      || true
+  echo "$html" | grep -qi 'ng-version\|_nghost\|angular'                                && TECH_FRAMEWORK="Angular"  || true
+  echo "$html" | grep -qi 'svelte\|__svelte'                                            && TECH_FRAMEWORK="Svelte"   || true
+  echo "$html" | grep -qi 'astro\|data-astro'                                           && TECH_FRAMEWORK="Astro"    || true
+  echo "$html" | grep -qi 'remix\.run\|__remixContext'                                  && TECH_FRAMEWORK="Remix"    || true
+
+  TECH_ANALYTICS=()
+  echo "$html" | grep -qi 'gtag\|google-analytics\|analytics\.js'  && TECH_ANALYTICS+=("Google Analytics") || true
+  echo "$html" | grep -qi 'googletagmanager'                        && TECH_ANALYTICS+=("Google Tag Manager") || true
+  echo "$html" | grep -qi 'fbevents\|fbq('                         && TECH_ANALYTICS+=("Meta Pixel") || true
+  echo "$html" | grep -qi 'hotjar'                                  && TECH_ANALYTICS+=("Hotjar") || true
+  echo "$html" | grep -qi 'mixpanel'                                && TECH_ANALYTICS+=("Mixpanel") || true
+  echo "$html" | grep -qi 'segment\.com\|analytics\.js'            && TECH_ANALYTICS+=("Segment") || true
+  echo "$html" | grep -qi 'plausible'                               && TECH_ANALYTICS+=("Plausible") || true
+  [[ ${#TECH_ANALYTICS[@]} -eq 0 ]] && TECH_ANALYTICS=("Ninguno detectado")
+
+  TECH_SERVER=$(echo "$headers" | grep "^server:" | head -1 | sed 's/server: //' | xargs || echo "Oculto")
+  TECH_LANGUAGE="Desconocido"
+  echo "$headers" | grep -qi "x-powered-by: php"    && TECH_LANGUAGE="PHP"    || true
+  echo "$headers" | grep -qi "x-powered-by: asp"    && TECH_LANGUAGE=".NET"   || true
+  echo "$headers" | grep -qi "x-powered-by: express\|node" && TECH_LANGUAGE="Node.js" || true
+  local phpsess; phpsess=$(echo "$headers" | grep "set-cookie" | grep -i "PHPSESSID" || echo "")
+  [[ -n "$phpsess" ]] && TECH_LANGUAGE="PHP" || true
+
+  TECH_CDN="${PERF_CDN:-No detectado}"
+
+  # webanalyze si está disponible
+  TECH_WEBANALYZE=""
+  if command -v webanalyze &>/dev/null; then
+    info "Ejecutando webanalyze..."
+    TECH_WEBANALYZE=$(webanalyze -host "$URL" 2>/dev/null | head -20 || echo "")
+    [[ -n "$TECH_WEBANALYZE" ]] && ok "webanalyze completado" || true
+  fi
+
+  ok "Stack tecnológico detectado"
 }
 
 # ─── DIMENSION 8: UX ──────────────────────────────────────────────────────────
@@ -685,7 +996,7 @@ analyze_ux() {
   step "Analizando UX"
   local score=70
   local html
-  html=$(fetch_url "$URL")
+  html="$HTML_CACHE"
 
   UX_NAV=false;       echo "$html" | grep -qi '<nav\|role="navigation"'             && UX_NAV=true       || true
   UX_SEARCH=false;    echo "$html" | grep -qi 'type="search"\|input.*search'         && UX_SEARCH=true    || true
@@ -702,6 +1013,13 @@ analyze_ux() {
   UX_404=$(http_status "${URL%/}/pagina-que-no-existe-audit-xyz123")
   [[ "$UX_404" != "404" ]] && score=$((score-10)) || true
 
+  UX_500=$(http_status "${URL%/}/error-500-audit-xyz")
+  UX_BREADCRUMBS=false; echo "$html" | grep -qi 'breadcrumb\|aria-label.*breadcrumb' && UX_BREADCRUMBS=true || true
+  UX_SOCIAL=false;      echo "$html" | grep -qi 'twitter\.com\|linkedin\.com\|instagram\.com\|facebook\.com' && UX_SOCIAL=true || true
+  UX_CHAT=false;        echo "$html" | grep -qi 'intercom\|drift\|zendesk\|crisp\|tidio\|freshchat' && UX_CHAT=true || true
+  UX_FORM_VALIDATION=false; echo "$html" | grep -qi 'required\|pattern=\|minlength=' && UX_FORM_VALIDATION=true || true
+  UX_LANG_SWITCH=false; echo "$html" | grep -qi 'lang-switch\|language-selector\|idioma\|hreflang' && UX_LANG_SWITCH=true || true
+
   (( score < 0 )) && score=0; (( score > 100 )) && score=100
   set_score "ux" "$score"; SCORE_UX=$score
   ok "UX score: $(score_color $score)"
@@ -711,7 +1029,7 @@ analyze_ux() {
 analyze_legal() {
   step "Analizando Legal & Privacidad"
   local html
-  html=$(fetch_url "$URL")
+  html="$HTML_CACHE"
 
   LEGAL_PRIVACY=false; echo "$html" | grep -qi "privacy\|privacidad\|política"          && LEGAL_PRIVACY=true || true
   LEGAL_TERMS=false;   echo "$html" | grep -qi "terms\|condiciones\|aviso.legal"         && LEGAL_TERMS=true   || true
@@ -752,6 +1070,16 @@ find_previous_report() {
 extract_prev_score() {
   local report="$1" dimension="$2"
   grep -i "| ${dimension}" "$report" 2>/dev/null | grep -oE '[0-9]+' | head -1 || echo "N/A"
+}
+
+score_delta() {
+  local prev="$1" curr="$2"
+  [[ "$prev" == "N/A" || -z "$prev" ]] && { echo "—"; return; }
+  local diff=$(( curr - prev ))
+  if   (( diff > 0 )); then echo "+${diff} 🟢"
+  elif (( diff < 0 )); then echo "${diff} 🔴"
+  else echo "= 🟡"
+  fi
 }
 
 # ─── Generate report ──────────────────────────────────────────────────────────
@@ -796,7 +1124,14 @@ Diseño           $(ascii_bar $SCORE_DISENO)       ${SCORE_DISENO}/100
 UX               $(ascii_bar $SCORE_UX)           ${SCORE_UX}/100
 \`\`\`
 
----
+$(if [[ -n "${SCREENSHOT_MOBILE:-}" || -n "${SCREENSHOT_DESKTOP:-}" ]]; then
+echo "### 📸 Capturas de Pantalla"
+echo ""
+[ -n "${SCREENSHOT_MOBILE:-}"  ] && echo "**📱 Mobile**" && echo "![Mobile](${SCREENSHOT_MOBILE})" && echo ""
+[ -n "${SCREENSHOT_DESKTOP:-}" ] && echo "**🖥️ Desktop**" && echo "![Desktop](${SCREENSHOT_DESKTOP})" && echo ""
+echo "---"
+echo ""
+fi)
 
 ## 📊 Scores por Dimensión
 
@@ -813,20 +1148,51 @@ UX               $(ascii_bar $SCORE_UX)           ${SCORE_UX}/100
 
 ---
 
-## 🏆 Benchmarking
+## 🏆 Benchmarking $([ -n "${SECTOR:-}" ] && echo "— Sector: ${SECTOR}")
 
-| Dimensión | Tu sitio | Promedio sector | Top 10% |
-|-----------|:--------:|:--------------:|:-------:|
-| Performance | ${SCORE_PERFORMANCE} | 65 | 90+ |
-| SEO | ${SCORE_SEO} | 70 | 90+ |
-| Accesibilidad | ${SCORE_ACCESIBILIDAD} | 55 | 85+ |
-| Seguridad | ${SCORE_SEGURIDAD} | 50 | 90+ |
-| Ciberseguridad | ${SCORE_CIBERSEGURIDAD} | 45 | 85+ |
-| Calidad Técnica | ${SCORE_CALIDAD_TECNICA} | 60 | 85+ |
-| Diseño | ${SCORE_DISENO} | 65 | 90+ |
-| UX | ${SCORE_UX} | 60 | 88+ |
+$(
+# Promedios por sector: perf seo acc seg cyber calidad dis ux
+case "${SECTOR:-general}" in
+  ecommerce) B="72 75 58 55 50 65 70 75" T="92 92 85 88 82 88 92 92" ;;
+  saas)      B="70 68 60 65 58 70 65 70" T="92 88 88 92 85 90 88 90" ;;
+  blog)      B="68 80 55 48 42 62 60 62" T="90 95 82 80 75 85 85 85" ;;
+  landing)   B="75 70 55 50 45 60 72 78" T="95 90 82 85 80 85 92 92" ;;
+  portfolio) B="65 65 55 48 42 62 80 70" T="90 85 82 80 75 85 95 90" ;;
+  *)         B="65 70 55 50 45 60 65 60" T="90 90 85 90 85 85 90 88" ;;
+esac
+set -- $B; bp=$1 bs=$2 ba=$3 bsec=$4 bcy=$5 bct=$6 bd=$7 bu=$8
+set -- $T; tp=$1 ts=$2 ta=$3 tsec=$4 tcy=$5 tct=$6 td=$7 tu=$8
+
+echo "| Dimensión | Tu sitio | Promedio sector | Top 10% |"
+echo "|-----------|:--------:|:--------------:|:-------:|"
+echo "| Performance | ${SCORE_PERFORMANCE} | ${bp} | ${tp}+ |"
+echo "| SEO | ${SCORE_SEO} | ${bs} | ${ts}+ |"
+echo "| Accesibilidad | ${SCORE_ACCESIBILIDAD} | ${ba} | ${ta}+ |"
+echo "| Seguridad | ${SCORE_SEGURIDAD} | ${bsec} | ${tsec}+ |"
+echo "| Ciberseguridad | ${SCORE_CIBERSEGURIDAD} | ${bcy} | ${tcy}+ |"
+echo "| Calidad Técnica | ${SCORE_CALIDAD_TECNICA} | ${bct} | ${tct}+ |"
+echo "| Diseño | ${SCORE_DISENO} | ${bd} | ${td}+ |"
+echo "| UX | ${SCORE_UX} | ${bu} | ${tu}+ |"
+)
 
 ---
+
+$(if [[ "$LH_DONE_MOBILE" == true || "$LH_DONE_DESKTOP" == true ]]; then
+cat << LHMD
+## 🔦 Lighthouse — Mobile vs Desktop
+
+| Categoría | 📱 Mobile | 🖥️ Desktop | Diferencia |
+|-----------|:---------:|:----------:|:----------:|
+| Performance | ${PERF_LH_MOBILE:-N/A} | ${PERF_LH_DESKTOP:-N/A} | $([ -n "${PERF_LH_MOBILE:-}" ] && [ -n "${PERF_LH_DESKTOP:-}" ] && score_delta "$PERF_LH_MOBILE" "$PERF_LH_DESKTOP" || echo "—") |
+| SEO | ${SEO_LH_MOBILE:-N/A} | ${SEO_LH_DESKTOP:-N/A} | $([ -n "${SEO_LH_MOBILE:-}" ] && [ -n "${SEO_LH_DESKTOP:-}" ] && score_delta "$SEO_LH_MOBILE" "$SEO_LH_DESKTOP" || echo "—") |
+| Accesibilidad | ${ACC_LH_MOBILE:-N/A} | ${ACC_LH_DESKTOP:-N/A} | $([ -n "${ACC_LH_MOBILE:-}" ] && [ -n "${ACC_LH_DESKTOP:-}" ] && score_delta "$ACC_LH_MOBILE" "$ACC_LH_DESKTOP" || echo "—") |
+| Best Practices | ${DIS_LH_MOBILE:-N/A} | ${DIS_LH_DESKTOP:-N/A} | $([ -n "${DIS_LH_MOBILE:-}" ] && [ -n "${DIS_LH_DESKTOP:-}" ] && score_delta "$DIS_LH_MOBILE" "$DIS_LH_DESKTOP" || echo "—") |
+
+> 📱 Mobile simula una conexión 4G lenta con CPU reducida. 🖥️ Desktop usa condiciones de red y hardware estándar. Una diferencia grande entre ambos indica oportunidades de optimización móvil.
+
+---
+LHMD
+fi)
 
 ## 🔎 Hallazgos por Dimensión
 
@@ -835,16 +1201,36 @@ UX               $(ascii_bar $SCORE_UX)           ${SCORE_UX}/100
 | Hallazgo | Valor | Severidad |
 |----------|-------|-----------|
 | Tiempo de respuesta | ${PERF_RESP_MS}ms | $(severity_badge ${PERF_RESP_SEVERITY:-bajo}) |
+| TTFB | ${PERF_TTFB_MS:-N/A}ms | $([ "${PERF_TTFB_MS:-0}" -gt 600 ] && echo "🟠 ALTO" || echo "🟢 BAJO") |
+| Redirects | ${PERF_REDIRECTS:-0} | $([ "${PERF_REDIRECTS:-0}" -gt 2 ] && echo "🟡 MEDIO" || echo "🟢 OK") |
+| CDN | ${PERF_CDN:-No detectado} | $([ "${PERF_CDN:-No detectado}" != "No detectado" ] && echo "🟢 OK" || echo "🟡 MEDIO") |
 | Tamaño HTML | ${PERF_SIZE_KB}KB | $([ ${PERF_SIZE_KB:-0} -gt 200 ] && echo "🟡 MEDIO" || echo "🟢 BAJO") |
+| Scripts JS | ${PERF_JS_COUNT:-0} | $([ "${PERF_JS_COUNT:-0}" -gt 20 ] && echo "🟡 MEDIO" || echo "🟢 OK") |
+| Hojas CSS | ${PERF_CSS_COUNT:-0} | $([ "${PERF_CSS_COUNT:-0}" -gt 10 ] && echo "🟡 MEDIO" || echo "🟢 OK") |
+| Imágenes | ${PERF_IMG_COUNT:-0} | — |
 | Protocolo | ${PERF_PROTOCOL} | $(echo "$PERF_PROTOCOL" | grep -q "2\|3" && echo "🟢 OK" || echo "🟡 MEDIO") |
 | Compresión | $(echo "$PERF_COMPRESSION" | grep -qi "gzip\|br\|deflate" && echo "✅ Activa" || echo "❌ Inactiva") | $(echo "$PERF_COMPRESSION" | grep -qi "gzip\|br\|deflate" && echo "🟢 OK" || echo "🟡 MEDIO") |
-$([ -n "${PERF_LH_SCORE:-}" ] && echo "| Lighthouse | ${PERF_LH_SCORE}/100 | — |")
+$([ -n "${PERF_LH_MOBILE:-}" ] && echo "| Lighthouse 📱 Mobile | ${PERF_LH_MOBILE}/100 | — |")
+$([ -n "${PERF_LH_DESKTOP:-}" ] && echo "| Lighthouse 🖥️ Desktop | ${PERF_LH_DESKTOP}/100 | — |")
+
+$(if [[ "$LH_DONE_MOBILE" == true || "$LH_DONE_DESKTOP" == true ]]; then
+echo "**Core Web Vitals:**"
+echo ""
+echo "| Métrica | 📱 Mobile | 🖥️ Desktop |"
+echo "|---------|:---------:|:----------:|"
+echo "| LCP (Largest Contentful Paint) | $(lh_metric 'largest-contentful-paint' 'mobile') | $(lh_metric 'largest-contentful-paint' 'desktop') |"
+echo "| FCP (First Contentful Paint) | $(lh_metric 'first-contentful-paint' 'mobile') | $(lh_metric 'first-contentful-paint' 'desktop') |"
+echo "| TBT (Total Blocking Time) | $(lh_metric 'total-blocking-time' 'mobile') | $(lh_metric 'total-blocking-time' 'desktop') |"
+echo "| CLS (Cumulative Layout Shift) | $(lh_metric 'cumulative-layout-shift' 'mobile') | $(lh_metric 'cumulative-layout-shift' 'desktop') |"
+echo "| Speed Index | $(lh_metric 'speed-index' 'mobile') | $(lh_metric 'speed-index' 'desktop') |"
+fi)
 
 **💡 Recomendaciones:**
-- $([ "${PERF_RESP_SEVERITY:-bajo}" != "bajo" ] && echo "🟠 Optimizar TTFB a <200ms (CDN, caché, servidor)" || echo "Tiempo de respuesta óptimo ✓")
-- $(echo "$PERF_PROTOCOL" | grep -q "2\|3" || echo "🟡 Migrar a HTTP/2 o HTTP/3")
-- $(echo "$PERF_COMPRESSION" | grep -qi "gzip\|br\|deflate" || echo "🟡 Activar compresión Gzip/Brotli en el servidor")
-- Implementar lazy loading para imágenes y revisar Core Web Vitals (LCP, FID, CLS)
+- $([ "${PERF_RESP_SEVERITY:-bajo}" != "bajo" ] && echo "🟠 Optimizar TTFB a <600ms (CDN, caché de servidor, optimización de base de datos)" || echo "Tiempo de respuesta óptimo ✓")
+- $([ "${PERF_CDN:-No detectado}" == "No detectado" ] && echo "🟡 Implementar CDN para reducir latencia geográfica y tiempo de carga" || echo "CDN activo ✓")
+- $(echo "$PERF_PROTOCOL" | grep -q "2\|3" || echo "🟡 Migrar a HTTP/2 o HTTP/3 — multiplexación de requests paralelos")
+- $(echo "$PERF_COMPRESSION" | grep -qi "gzip\|br\|deflate" || echo "🟡 Activar compresión Gzip/Brotli — reduce el tamaño de transferencia hasta un 70%")
+- $([ "${PERF_JS_COUNT:-0}" -gt 20 ] && echo "🟡 Consolidar o diferir scripts JS (${PERF_JS_COUNT} detectados) — cada request adicional suma latencia" || echo "Cantidad de scripts JS aceptable ✓")
 
 ---
 
@@ -852,14 +1238,24 @@ $([ -n "${PERF_LH_SCORE:-}" ] && echo "| Lighthouse | ${PERF_LH_SCORE}/100 | —
 
 | Elemento | Estado | Detalle |
 |----------|--------|---------|
+$([ -n "${SITE_OG_IMAGE:-}" ] && echo "![Vista previa](${SITE_OG_IMAGE})" || true)
+
+| Elemento | Estado | Detalle |
+|----------|--------|---------|
 | \`<title>\` | $([ "$SEO_TITLE" == "AUSENTE" ] && echo "❌" || echo "✅") | ${SEO_TITLE:0:60} (${SEO_TITLE_LEN} chars) |
 | Meta description | $([ "$SEO_META_DESC" == "AUSENTE" ] && echo "❌" || echo "✅") | ${SEO_META_DESC_LEN} chars |
+| Meta robots | ℹ️ | ${SEO_META_ROBOTS} |
 | H1 | $([ "${SEO_H1_COUNT:-0}" -eq 1 ] && echo "✅" || echo "⚠️") | ${SEO_H1_COUNT:-0} encontrados |
+| H2 / H3 | ℹ️ | ${SEO_H2_COUNT:-0} H2 · ${SEO_H3_COUNT:-0} H3 |
 | Open Graph | $([ "$SEO_OG" == "true" ] && echo "✅" || echo "❌") | — |
+| Twitter/X Card | $([ "$SEO_TWITTER_CARD" == "true" ] && echo "✅" || echo "❌") | — |
+| Schema.org | $([ "$SEO_SCHEMA" == "true" ] && echo "✅" || echo "❌") | ${SEO_SCHEMA_TYPES:-N/A} |
+| hreflang | $([ "$SEO_HREFLANG" == "true" ] && echo "✅" || echo "➖") | — |
+| Links internos / externos | ℹ️ | ${SEO_INT_LINKS:-0} internos · ${SEO_EXT_LINKS:-0} externos |
 | robots.txt | $([ "$SEO_ROBOTS" == "200" ] && echo "✅" || echo "❌") | HTTP ${SEO_ROBOTS} |
 | sitemap.xml | $([ "$SEO_SITEMAP" == "200" ] && echo "✅" || echo "❌") | HTTP ${SEO_SITEMAP} |
-| Schema.org | $([ "$SEO_SCHEMA" == "true" ] && echo "✅" || echo "❌") | — |
-$([ -n "${SEO_LH_SCORE:-}" ] && echo "| Lighthouse SEO | ✅ ${SEO_LH_SCORE}/100 | — |")
+$([ -n "${SEO_LH_MOBILE:-}" ] && echo "| Lighthouse SEO 📱 Mobile | ✅ ${SEO_LH_MOBILE}/100 | — |")
+$([ -n "${SEO_LH_DESKTOP:-}" ] && echo "| Lighthouse SEO 🖥️ Desktop | ✅ ${SEO_LH_DESKTOP}/100 | — |")
 
 **💡 Recomendaciones:**
 - $([ "$SEO_TITLE"    == "AUSENTE" ] && echo "🔴 CRÍTICO: Añadir \`<title>\` único (30-60 chars)"           || echo "Title tag presente ✓")
@@ -878,7 +1274,8 @@ $([ -n "${SEO_LH_SCORE:-}" ] && echo "| Lighthouse SEO | ✅ ${SEO_LH_SCORE}/100
 | ARIA labels | $([ "$ACC_ARIA" == "true" ] && echo "✅" || echo "❌") | — |
 | Skip navigation | $([ "$ACC_SKIP" == "true" ] && echo "✅" || echo "❌") | — |
 | Formularios/Labels | $([ "${ACC_FORMS:-0}" -eq 0 ] || [ "${ACC_LABELS:-0}" -ge "${ACC_FORMS:-0}" ] && echo "✅" || echo "⚠️") | ${ACC_FORMS:-0} forms · ${ACC_LABELS:-0} labels |
-$([ -n "${ACC_LH_SCORE:-}" ] && echo "| Lighthouse A11y | ✅ ${ACC_LH_SCORE}/100 | — |")
+$([ -n "${ACC_LH_MOBILE:-}" ] && echo "| Lighthouse A11y 📱 Mobile | ✅ ${ACC_LH_MOBILE}/100 | — |")
+$([ -n "${ACC_LH_DESKTOP:-}" ] && echo "| Lighthouse A11y 🖥️ Desktop | ✅ ${ACC_LH_DESKTOP}/100 | — |")
 $([ "${ACC_AXE_VIOLATIONS:-0}" -gt 0 ] && echo "| axe-core violations | ⚠️ ${ACC_AXE_VIOLATIONS} | ${ACC_AXE_SERIOUS:-0} críticas/serias |" || echo "| axe-core | ✅ Sin violations | — |")
 $([ "${ACC_PA11Y_ERRORS:-0}" -gt 0 ] && echo "| pa11y errores | ⚠️ ${ACC_PA11Y_ERRORS} | ${ACC_PA11Y_WARNINGS:-0} warnings |" || echo "| pa11y | ✅ Sin errores | — |")
 
@@ -900,30 +1297,41 @@ $([ "${ACC_PA11Y_ERRORS:-0}" -gt 0 ] && echo "| pa11y errores | ⚠️ ${ACC_PA1
 | **Proveedor hosting** | ${SEC_HOST_PROVIDER:-Desconocido} |
 | **Ubicación** | ${SEC_HOST_CITY:-?}, ${SEC_HOST_COUNTRY:-?} |
 | **ASN** | ${SEC_HOST_ASN:-Desconocido} |
+| **Abuse contact hosting** | ${SEC_HOST_ABUSE:-Desconocido} |
 | **Registrador dominio** | ${SEC_DOM_REGISTRAR:-Desconocido} |
+| **Email abuse registrador** | ${SEC_DOM_ABUSE_EMAIL:-Desconocido} |
+| **Estado dominio** | ${SEC_DOM_STATUS:-Desconocido} |
+| **DNSSEC** | $([ "${SEC_DOM_DNSSEC:-false}" == "true" ] && echo "✅ Activo" || echo "⚠️ No configurado") |
 | **Dominio creado** | ${SEC_DOM_CREATED:-Desconocido} |
 | **Dominio expira** | ${SEC_DOM_EXPIRES:-Desconocido} ${SEC_DOM_EXPIRY_NOTE:+— $SEC_DOM_EXPIRY_NOTE} |
 | **Última actualización** | ${SEC_DOM_UPDATED:-Desconocido} |
 | **Nameservers** | \`${SEC_DOM_NAMESERVERS:-Desconocido}\` |
 | **Privacidad WHOIS** | $([ "$SEC_DOM_PRIVACY" == "true" ] && echo "✅ Activada" || echo "⚠️ Datos expuestos") |
+| **CAA Record** | $([ "${SEC_CAA:-AUSENTE}" != "AUSENTE" ] && echo "✅ ${SEC_CAA:0:50}" || echo "⚠️ AUSENTE") |
+| **MX Record** | $([ "${SEC_MX:-AUSENTE}" != "AUSENTE" ] && echo "✅ Configurado" || echo "⚠️ AUSENTE") |
 
 #### 🔐 Certificado SSL
 
 | Elemento | Estado |
 |----------|--------|
 | Expiración SSL | ${SEC_SSL_EXPIRY_NOTE:-No verificado} |
+| Versión TLS | ${SSL_PROTOCOL:-Desconocido} |
+| Cipher suite | ${SSL_CIPHER:-Desconocido} |
+| Emisor | ${SSL_ISSUER:-Desconocido} |
+| SAN (dominios cubiertos) | ${SSL_SAN:-N/A} |
 $([ -n "${SEC_SSLCHECK_RESULT:-}" ] && echo "| ssl-checker | \`${SEC_SSLCHECK_RESULT}\` |")
 
 #### 🛡️ Headers de Seguridad
 
-| Header | Estado | Importancia |
-|--------|--------|-------------|
-| Strict-Transport-Security (HSTS) | $([ "$SEC_HSTS" == "true" ] && echo "✅" || echo "❌") | 🔴 Crítico |
-| Content-Security-Policy (CSP)    | $([ "$SEC_CSP"  == "true" ] && echo "✅" || echo "❌") | 🔴 Crítico |
-| X-Content-Type-Options           | $([ "$SEC_XCTO" == "true" ] && echo "✅" || echo "❌") | 🟠 Alto |
-| X-Frame-Options                  | $([ "$SEC_XFO"  == "true" ] && echo "✅" || echo "❌") | 🟠 Alto |
-| Referrer-Policy                  | $([ "$SEC_RP"   == "true" ] && echo "✅" || echo "❌") | 🟡 Medio |
-| Permissions-Policy               | $([ "$SEC_PER"  == "true" ] && echo "✅" || echo "❌") | 🟡 Medio |
+| Header | Estado | Detalle | Importancia |
+|--------|--------|---------|-------------|
+| Strict-Transport-Security (HSTS) | $([ "$SEC_HSTS" == "true" ] && echo "✅" || echo "❌") | $([ "$SEC_HSTS" == "true" ] && echo "max-age=${SEC_HSTS_MAXAGE:-?}s" || echo "Ausente") | 🔴 Crítico |
+| Content-Security-Policy (CSP)    | $([ "$SEC_CSP"  == "true" ] && echo "$([ "$SEC_CSP_UNSAFE" == "true" ] && echo "⚠️ Inseguro" || echo "✅")" || echo "❌") | $([ "$SEC_CSP_UNSAFE" == "true" ] && echo "unsafe-inline detectado" || echo "—") | 🔴 Crítico |
+| X-Content-Type-Options           | $([ "$SEC_XCTO" == "true" ] && echo "✅" || echo "❌") | — | 🟠 Alto |
+| X-Frame-Options                  | $([ "$SEC_XFO"  == "true" ] && echo "✅" || echo "❌") | — | 🟠 Alto |
+| Referrer-Policy                  | $([ "$SEC_RP"   == "true" ] && echo "✅" || echo "❌") | — | 🟡 Medio |
+| Permissions-Policy               | $([ "$SEC_PER"  == "true" ] && echo "✅" || echo "❌") | — | 🟡 Medio |
+| Subresource Integrity (SRI)      | $([ "$SEC_SRI"  == "true" ] && echo "✅" || echo "➖") | — | 🟡 Medio |
 | HTTPS Redirect                   | $([ "$SEC_HTTPS_REDIRECT" == "true" ] && echo "✅" || echo "❌") | 🔴 Crítico |
 | Cookies Secure                   | $([ "$SEC_COOKIE_SECURE"   == "true" ] && echo "✅" || echo "⚠️") | 🟠 Alto |
 | Cookies HttpOnly                 | $([ "$SEC_COOKIE_HTTPONLY" == "true" ] && echo "✅" || echo "⚠️") | 🟠 Alto |
@@ -944,13 +1352,16 @@ $([ -n "${SEC_SSLCHECK_RESULT:-}" ] && echo "| ssl-checker | \`${SEC_SSLCHECK_RE
 | Server header | $(echo "$CYBER_SERVER" | grep -qiE "^oculto$" && echo "✅ Oculto" || echo "⚠️ Expuesto") | \`${CYBER_SERVER}\` |
 | X-Powered-By | $(echo "$CYBER_POWERED_BY" | grep -qiE "^oculto$" && echo "✅ Oculto" || echo "⚠️ Expuesto") | \`${CYBER_POWERED_BY}\` |
 | Directorios expuestos | $([ "${CYBER_EXPOSED_DIRS[0]}" == "Ninguno detectado" ] && echo "✅ OK" || echo "🔴 DETECTADOS") | ${CYBER_EXPOSED_DIRS[*]} |
-| security.txt | $([ "$CYBER_SEC_TXT" == "200" ] && echo "✅" || echo "⚠️") | HTTP ${CYBER_SEC_TXT} |
-| SPF Record | $(echo "$CYBER_SPF" | grep -qi "v=spf" && echo "✅" || echo "⚠️") | \`${CYBER_SPF:0:60}\` |
-| DMARC Record | $(echo "$CYBER_DMARC" | grep -qi "v=DMARC" && echo "✅" || echo "⚠️") | \`${CYBER_DMARC:0:60}\` |
+| security.txt | $([ "$CYBER_SEC_TXT" == "200" ] && echo "✅" || echo "⚠️") | Contacto: ${CYBER_SEC_TXT_CONTACT:-—} |
+| SPF Record | $(echo "$CYBER_SPF" | grep -qi "v=spf" && echo "✅" || echo "⚠️ AUSENTE") | \`${CYBER_SPF:0:60}\` |
+| DMARC Record | $(echo "$CYBER_DMARC" | grep -qi "v=DMARC" && echo "✅" || echo "⚠️ AUSENTE") | \`${CYBER_DMARC:0:60}\` |
+| DKIM Record | $(echo "$CYBER_DKIM" | grep -qi "v=DKIM" && echo "✅" || echo "⚠️ AUSENTE") | — |
+| BIMI Record | $(echo "$CYBER_BIMI" | grep -qi "v=BIMI" && echo "✅" || echo "➖ AUSENTE") | — |
 
 **💡 Recomendaciones:**
-- $(echo "$CYBER_SERVER" | grep -qiE "[0-9]\.|apache|nginx|iis|php" && echo "🟠 Ocultar versión en header Server" || echo "Server header sin versión ✓")
-- $([ "$CYBER_SEC_TXT" != "200" ] && echo "🟢 Crear \`/.well-known/security.txt\` con contacto de seguridad" || echo "security.txt presente ✓")
+- $(echo "$CYBER_SERVER" | grep -qiE "[0-9]\.|apache|nginx|iis|php" && echo "🟠 Ocultar versión en header Server — exponer la versión facilita ataques dirigidos" || echo "Server header sin versión ✓")
+- $([ "$CYBER_SEC_TXT" != "200" ] && echo "🟢 Crear \`/.well-known/security.txt\` — permite a investigadores reportar vulnerabilidades de forma responsable" || echo "security.txt presente ✓")
+- $(echo "$CYBER_DKIM" | grep -qi "v=DKIM" || echo "🟡 Configurar DKIM — junto a SPF y DMARC protege al dominio de suplantación de identidad en emails")
 - Implementar WAF y realizar pentesting periódico (OWASP Top 10)
 
 ---
@@ -967,12 +1378,17 @@ $([ -n "${SEC_SSLCHECK_RESULT:-}" ] && echo "| ssl-checker | \`${SEC_SSLCHECK_RE
 | Canonical URL | $([ "$CT_CANONICAL" == "true" ] && echo "✅" || echo "❌") |
 | Scripts inline | $([ "${CT_INLINE_SCRIPTS:-0}" -le 5 ] && echo "✅" || echo "⚠️") | ${CT_INLINE_SCRIPTS:-0} |
 | Estilos inline | $([ "${CT_INLINE_STYLES:-0}" -le 10 ] && echo "✅" || echo "⚠️") | ${CT_INLINE_STYLES:-0} |
+| Tags deprecados | $([ "${CT_DEPRECATED:-0}" -eq 0 ] && echo "✅" || echo "⚠️") | ${CT_DEPRECATED:-0} detectados |
+| Mixed content | $([ "$CT_MIXED_CONTENT" == "false" ] && echo "✅" || echo "🔴") | — |
+| PWA manifest | $([ "$CT_PWA_MANIFEST" == "true" ] && echo "✅" || echo "➖") | — |
+| Service Worker | $([ "$CT_SERVICE_WORKER" == "true" ] && echo "✅" || echo "➖") | — |
 $([ "${CT_HTMLHINT_ERRORS:-0}" -gt 0 ] && echo "| htmlhint errores | ⚠️ ${CT_HTMLHINT_ERRORS} | ${CT_HTMLHINT_WARNINGS:-0} warnings |" || echo "| htmlhint | ✅ Sin errores | — |")
 
 **💡 Recomendaciones:**
-- $([ "$CT_DOCTYPE"   != "true" ] && echo "🔴 Añadir \`<!DOCTYPE html>\`" || echo "DOCTYPE correcto ✓")
-- $([ "$CT_LANG"      != "true" ] && echo "🟠 Añadir atributo \`lang\` al elemento \`<html>\`" || echo "Lang presente ✓")
-- $([ "$CT_CANONICAL" != "true" ] && echo "🟡 Implementar URLs canónicas para evitar contenido duplicado" || echo "Canonical presente ✓")
+- $([ "$CT_DOCTYPE"   != "true" ] && echo "🔴 Añadir \`<!DOCTYPE html>\` — sin él el navegador entra en modo quirks y el renderizado es impredecible" || echo "DOCTYPE correcto ✓")
+- $([ "$CT_LANG"      != "true" ] && echo "🟠 Añadir atributo \`lang\` al elemento \`<html>\` — requerido para lectores de pantalla y motores de búsqueda" || echo "Lang presente ✓")
+- $([ "$CT_CANONICAL" != "true" ] && echo "🟡 Implementar URLs canónicas — sin ellas Google puede indexar versiones duplicadas y dividir el posicionamiento" || echo "Canonical presente ✓")
+- $([ "$CT_MIXED_CONTENT" == "true" ] && echo "🔴 Eliminar recursos HTTP en página HTTPS — los navegadores los bloquean y esto daña la experiencia del usuario" || echo "Sin mixed content ✓")
 
 ---
 
@@ -983,9 +1399,13 @@ $([ "${CT_HTMLHINT_ERRORS:-0}" -gt 0 ] && echo "| htmlhint errores | ⚠️ ${CT
 | Responsive | $([ "$DIS_VIEWPORT"   == "true" ] && echo "✅" || echo "❌") | — |
 | Framework CSS | ✅ | ${DIS_FRAMEWORKS[*]} |
 | Tipografía web | $([ "$DIS_FONTS"     == "true" ] && echo "✅" || echo "➖") | — |
-| Favicon | $([ "$DIS_FAVICON"   == "true" ] && echo "✅" || echo "⚠️") | — |
+| Favicon | $([ "$DIS_FAVICON"   == "true" ] && echo "✅" || echo "⚠️") | $([ -n "${SITE_FAVICON:-}" ] && echo "\`${SITE_FAVICON}\`" || echo "—") |
+| Favicon alta resolución | $([ "$DIS_FAVICON_HI" == "true" ] && echo "✅" || echo "➖") | — |
 | Dark mode | $([ "$DIS_DARK_MODE" == "true" ] && echo "✅" || echo "➖") | — |
-$([ -n "${DIS_LH_SCORE:-}" ] && echo "| Lighthouse Best Practices | ✅ ${DIS_LH_SCORE}/100 | — |")
+| Print stylesheet | $([ "$DIS_PRINT_CSS" == "true" ] && echo "✅" || echo "➖") | — |
+| Breakpoints \`@media\` | ℹ️ | ${DIS_BREAKPOINTS:-0} detectados |
+$([ -n "${DIS_LH_MOBILE:-}" ] && echo "| Lighthouse Best Practices 📱 Mobile | ✅ ${DIS_LH_MOBILE}/100 | — |")
+$([ -n "${DIS_LH_DESKTOP:-}" ] && echo "| Lighthouse Best Practices 🖥️ Desktop | ✅ ${DIS_LH_DESKTOP}/100 | — |")
 
 ---
 
@@ -993,13 +1413,63 @@ $([ -n "${DIS_LH_SCORE:-}" ] && echo "| Lighthouse Best Practices | ✅ ${DIS_LH
 
 | Elemento | Estado |
 |----------|--------|
-| Navegación \`<nav>\` | $([ "$UX_NAV"        == "true" ] && echo "✅" || echo "❌") |
-| Buscador | $([ "$UX_SEARCH"    == "true" ] && echo "✅" || echo "➖") |
-| Contacto visible | $([ "$UX_CONTACT"  == "true" ] && echo "✅" || echo "❌") |
-| CTAs | $([ "$UX_CTA"       == "true" ] && echo "✅" || echo "⚠️") |
-| Responsive | $([ "$UX_RESPONSIVE"== "true" ] && echo "✅" || echo "❌") |
-| Loading states | $([ "$UX_LOADING"  == "true" ] && echo "✅" || echo "➖") |
+| Navegación \`<nav>\` | $([ "$UX_NAV"            == "true" ] && echo "✅" || echo "❌") |
+| Buscador | $([ "$UX_SEARCH"          == "true" ] && echo "✅" || echo "➖") |
+| Contacto visible | $([ "$UX_CONTACT"       == "true" ] && echo "✅" || echo "❌") |
+| CTAs | $([ "$UX_CTA"               == "true" ] && echo "✅" || echo "⚠️") |
+| Responsive | $([ "$UX_RESPONSIVE"      == "true" ] && echo "✅" || echo "❌") |
+| Loading states | $([ "$UX_LOADING"        == "true" ] && echo "✅" || echo "➖") |
+| Redes sociales | $([ "$UX_SOCIAL"         == "true" ] && echo "✅" || echo "➖") |
+| Breadcrumbs | $([ "$UX_BREADCRUMBS"    == "true" ] && echo "✅" || echo "➖") |
+| Chat / Soporte | $([ "$UX_CHAT"           == "true" ] && echo "✅" || echo "➖") |
+| Validación formularios | $([ "$UX_FORM_VALIDATION" == "true" ] && echo "✅" || echo "➖") |
+| Language switcher | $([ "$UX_LANG_SWITCH"  == "true" ] && echo "✅" || echo "➖") |
 | Página 404 custom | $([ "$UX_404" == "404" ] && echo "✅" || echo "⚠️") |
+
+---
+
+## 🧰 Stack Tecnológico
+
+| Categoría | Detectado |
+|-----------|-----------|
+| CMS / Plataforma | ${TECH_CMS:-Desconocido} |
+| Framework JS | ${TECH_FRAMEWORK:-Desconocido} |
+| Servidor web | ${TECH_SERVER:-Oculto} |
+| Lenguaje backend | ${TECH_LANGUAGE:-Desconocido} |
+| CDN | ${TECH_CDN:-No detectado} |
+| Analytics / Marketing | ${TECH_ANALYTICS[*]:-Ninguno detectado} |
+
+$([ -n "${TECH_WEBANALYZE:-}" ] && echo "**Análisis extendido (webanalyze):**" && echo '```' && echo "$TECH_WEBANALYZE" && echo '```')
+
+---
+
+## 📧 Email Deliverability
+
+$(
+email_score=100
+spf_ok=false;   echo "$CYBER_SPF"   | grep -qi "v=spf"   && spf_ok=true   || email_score=$((email_score-30))
+dmarc_ok=false; echo "$CYBER_DMARC" | grep -qi "v=DMARC" && dmarc_ok=true || email_score=$((email_score-30))
+dkim_ok=false;  echo "$CYBER_DKIM"  | grep -qi "v=DKIM"  && dkim_ok=true  || email_score=$((email_score-25))
+mx_ok=false;    [ "${SEC_MX:-AUSENTE}" != "AUSENTE" ] && mx_ok=true        || email_score=$((email_score-10))
+bimi_ok=false;  echo "$CYBER_BIMI"  | grep -qi "v=BIMI"  && bimi_ok=true  || true
+(( email_score < 0 )) && email_score=0
+
+echo "**Score de Deliverability: $(score_badge $email_score) ${email_score}/100**"
+echo ""
+echo "| Mecanismo | Estado | Valor |"
+echo "|-----------|--------|-------|"
+echo "| SPF | $([ "$spf_ok" == "true" ] && echo "✅" || echo "🔴 AUSENTE") | \`${CYBER_SPF:0:60}\` |"
+echo "| DMARC | $([ "$dmarc_ok" == "true" ] && echo "✅" || echo "🔴 AUSENTE") | \`${CYBER_DMARC:0:60}\` |"
+echo "| DKIM | $([ "$dkim_ok" == "true" ] && echo "✅" || echo "🟠 AUSENTE") | — |"
+echo "| MX Records | $([ "$mx_ok" == "true" ] && echo "✅" || echo "🟡 AUSENTE") | \`${SEC_MX:0:50}\` |"
+echo "| BIMI | $([ "$bimi_ok" == "true" ] && echo "✅ Activo" || echo "➖ No configurado") | — |"
+echo ""
+if [[ "$spf_ok" == "false" || "$dmarc_ok" == "false" || "$dkim_ok" == "false" ]]; then
+  echo "> ⚠️ Sin los tres pilares (SPF + DMARC + DKIM), los emails del dominio pueden ser bloqueados por spam filters o suplantados por atacantes."
+else
+  echo "> ✅ Los tres pilares de autenticación de email están configurados. El dominio está protegido contra suplantación."
+fi
+)
 
 ---
 
@@ -1015,6 +1485,132 @@ $([ -n "${DIS_LH_SCORE:-}" ] && echo "| Lighthouse Best Practices | ✅ ${DIS_LH
 $([ "$LEGAL_PRIVACY" != "true" ] || [ "$LEGAL_COOKIES" != "true" ] && echo "⚠️ **Riesgo legal detectado.** Multas GDPR: hasta 20M€ o 4% de facturación anual." || echo "✅ Señales positivas de cumplimiento. Se recomienda auditoría legal completa.")
 
 ---
+
+## 🔧 Guía de Corrección — Hallazgos Críticos y Altos
+
+$(
+has_fixes=false
+
+if [[ "$SEC_HSTS" != "true" ]]; then has_fixes=true; cat << 'FIXEOF'
+### 🔴 HSTS ausente
+
+**Qué pasa sin esto:** Un atacante puede interceptar la conexión inicial HTTP antes de que el navegador sea redirigido a HTTPS (ataque MITM).
+
+**nginx:**
+```nginx
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+```
+**Apache:**
+```apache
+Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+```
+**Tiempo estimado:** < 30 minutos · **Impacto:** +20 pts Seguridad
+
+---
+FIXEOF
+fi
+
+if [[ "$SEC_CSP" != "true" ]]; then has_fixes=true; cat << 'FIXEOF'
+### 🔴 Content-Security-Policy ausente
+
+**Qué pasa sin esto:** El navegador ejecuta cualquier script sin restricciones — incluyendo los inyectados por atacantes (XSS).
+
+**Punto de partida (nginx/Apache):**
+```
+Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:;
+```
+> Ajustar según los dominios de recursos externos reales del sitio.
+
+**Tiempo estimado:** 1-2 horas · **Impacto:** +20 pts Seguridad
+
+---
+FIXEOF
+fi
+
+if [[ "$SEO_TITLE" == "AUSENTE" ]]; then has_fixes=true; cat << 'FIXEOF'
+### 🔴 Title tag ausente
+
+**Qué pasa sin esto:** Google no puede identificar el tema de la página — no aparece en resultados de búsqueda con texto relevante. CTR orgánico cercano a cero.
+
+```html
+<head>
+  <title>Nombre de Página | Nombre de Marca</title>
+</head>
+```
+> Longitud óptima: 50-60 caracteres. Único por página.
+
+**Tiempo estimado:** < 1 hora · **Impacto:** +25 pts SEO
+
+---
+FIXEOF
+fi
+
+if [[ "$CT_MIXED_CONTENT" == "true" ]]; then has_fixes=true; cat << 'FIXEOF'
+### 🔴 Mixed content detectado
+
+**Qué pasa sin esto:** Los navegadores modernos bloquean recursos HTTP en páginas HTTPS — imágenes rotas, scripts que no cargan, estilos que no aplican.
+
+```bash
+# Buscar recursos HTTP en el código fuente
+grep -rn 'src="http://' ./
+grep -rn 'href="http://' ./
+```
+> Reemplazar todas las URLs `http://` por `https://` o URLs relativas `//`.
+
+**Tiempo estimado:** 1-4 horas · **Impacto:** +15 pts Calidad Técnica
+
+---
+FIXEOF
+fi
+
+if [[ "${ACC_IMGS_NO_ALT:-0}" -gt 0 ]]; then has_fixes=true
+cat << FIXEOF
+### 🟠 ${ACC_IMGS_NO_ALT} imagen(es) sin atributo alt
+
+**Qué pasa sin esto:** Los lectores de pantalla no pueden describir las imágenes — usuarios con discapacidad visual quedan excluidos. También penaliza el SEO.
+
+\`\`\`html
+<!-- Antes -->
+<img src="producto.jpg">
+
+<!-- Después -->
+<img src="producto.jpg" alt="Descripción concisa del contenido de la imagen">
+
+<!-- Para imágenes decorativas -->
+<img src="decorativo.svg" alt="" role="presentation">
+\`\`\`
+
+**Tiempo estimado:** 30-60 min · **Impacto:** +5 pts Accesibilidad por cada imagen corregida
+
+---
+FIXEOF
+fi
+
+if [[ "$CYBER_SPF" == "AUSENTE" || "$CYBER_DMARC" == "AUSENTE" || "$CYBER_DKIM" == "AUSENTE" ]]; then
+has_fixes=true; cat << FIXEOF
+### 🟠 Autenticación de email incompleta (SPF/DMARC/DKIM)
+
+**Qué pasa sin esto:** Cualquier persona puede enviar emails haciéndose pasar por tu dominio — phishing, spam, daño reputacional.
+
+\`\`\`dns
+; SPF — reemplazar con tu servidor de correo real
+${domain}.  TXT  "v=spf1 include:_spf.google.com ~all"
+
+; DMARC
+_dmarc.${domain}.  TXT  "v=DMARC1; p=quarantine; rua=mailto:dmarc@${domain}"
+
+; DKIM — generado por tu proveedor de email
+default._domainkey.${domain}.  TXT  "v=DKIM1; k=rsa; p=<clave_publica>"
+\`\`\`
+
+**Tiempo estimado:** 1-2 horas · **Impacto:** Protección contra suplantación de identidad
+
+---
+FIXEOF
+fi
+
+[[ "$has_fixes" == "false" ]] && echo "> ✅ No se detectaron hallazgos críticos o altos que requieran corrección urgente."
+)
 
 ## 🎯 Matriz de Priorización
 
@@ -1053,10 +1649,14 @@ cat << EVOLMD
 
 | Dimensión | Anterior | Actual | Δ |
 |-----------|:--------:|:------:|:-:|
-| Global | $(grep "Score Global" "$prev_report" 2>/dev/null | perl -nle 'print $1 if /([0-9]+) \/ 100/' | head -1 || echo "N/A") | $SCORE_GLOBAL | — |
-| Performance | $(extract_prev_score "$prev_report" "Performance") | $SCORE_PERFORMANCE | — |
-| SEO | $(extract_prev_score "$prev_report" "SEO") | $SCORE_SEO | — |
-| Seguridad | $(extract_prev_score "$prev_report" "Seguridad") | $SCORE_SEGURIDAD | — |
+$(prev_global=$(grep "Score Global" "$prev_report" 2>/dev/null | perl -nle 'print $1 if /([0-9]+) \/ 100/' | head -1 || echo "N/A")
+echo "| Global | ${prev_global} | $SCORE_GLOBAL | $(score_delta "$prev_global" "$SCORE_GLOBAL") |")
+$(prev_perf=$(extract_prev_score "$prev_report" "Performance")
+echo "| Performance | ${prev_perf} | $SCORE_PERFORMANCE | $(score_delta "$prev_perf" "$SCORE_PERFORMANCE") |")
+$(prev_seo=$(extract_prev_score "$prev_report" "SEO")
+echo "| SEO | ${prev_seo} | $SCORE_SEO | $(score_delta "$prev_seo" "$SCORE_SEO") |")
+$(prev_seg=$(extract_prev_score "$prev_report" "Seguridad")
+echo "| Seguridad | ${prev_seg} | $SCORE_SEGURIDAD | $(score_delta "$prev_seg" "$SCORE_SEGURIDAD") |")
 
 EVOLMD
 fi)
@@ -1083,34 +1683,119 @@ fi)
 
 ## 📋 Plan de Acción
 
-### Sprint 1 — Esta semana
-- [ ] Configurar headers HSTS, CSP, X-Content-Type-Options
-- [ ] $([ "$SEO_TITLE" == "AUSENTE" ] && echo "Añadir title tags únicos" || echo "Revisar title tags")
-- [ ] Activar compresión Gzip/Brotli
-- [ ] $([ "$LEGAL_COOKIES" != "true" ] && echo "Implementar banner de cookies GDPR" || echo "Revisar banner de cookies")
+$(
+s1=""; s2=""; s3=""
 
-### Sprint 2 — Próximas 4 semanas
-- [ ] Optimizar meta descriptions y Open Graph
-- [ ] Sitemap.xml + Google Search Console
-- [ ] ARIA labels en componentes interactivos
-- [ ] SPF y DMARC en DNS
+# Sprint 1 — Críticos y altos de bajo esfuerzo
+[ "$SEC_HSTS"    != "true"    ] && s1="${s1}- [ ] Implementar HSTS en el servidor web\n"
+[ "$SEC_CSP"     != "true"    ] && s1="${s1}- [ ] Configurar Content-Security-Policy\n"
+[ "$SEC_XCTO"    != "true"    ] && s1="${s1}- [ ] Añadir X-Content-Type-Options: nosniff\n"
+[ "$SEC_XFO"     != "true"    ] && s1="${s1}- [ ] Añadir X-Frame-Options: DENY\n"
+[ "$SEC_HTTPS_REDIRECT" != "true" ] && s1="${s1}- [ ] Forzar redirección HTTP → HTTPS\n"
+echo "$PERF_COMPRESSION" | grep -qi "gzip\|br\|deflate" || s1="${s1}- [ ] Activar compresión Gzip/Brotli en el servidor\n"
+[ "$SEO_TITLE"   == "AUSENTE" ] && s1="${s1}- [ ] Añadir \`<title>\` único a todas las páginas\n"
+[ "$CT_DOCTYPE"  != "true"    ] && s1="${s1}- [ ] Añadir \`<!DOCTYPE html>\` al inicio del HTML\n"
+[ "$CT_MIXED_CONTENT" == "true" ] && s1="${s1}- [ ] Eliminar recursos HTTP en página HTTPS\n"
+[ -z "$s1" ] && s1="- [ ] Mantener los estándares actuales — sin críticos detectados\n"
 
-### Sprint 3 — Próximos 3 meses
-- [ ] Schema.org structured data
-- [ ] Auditoría WCAG 2.1 AA completa
-- [ ] Monitoreo continuo (uptime + Core Web Vitals)
-- [ ] Revisión legal de política de privacidad
+# Sprint 2 — Medios de esfuerzo razonable
+[ "$SEO_META_DESC" == "AUSENTE" ] && s2="${s2}- [ ] Crear meta descriptions únicas (120-160 chars)\n"
+[ "$SEO_ROBOTS"  != "200"     ] && s2="${s2}- [ ] Crear robots.txt en la raíz del sitio\n"
+[ "$SEO_SITEMAP" != "200"     ] && s2="${s2}- [ ] Generar sitemap.xml y registrar en Search Console\n"
+[ "$ACC_ARIA"    != "true"    ] && s2="${s2}- [ ] Implementar atributos ARIA en componentes interactivos\n"
+[ "${ACC_IMGS_NO_ALT:-0}" -gt 0 ] && s2="${s2}- [ ] Añadir atributo alt a ${ACC_IMGS_NO_ALT} imagen(es)\n"
+[ "$CYBER_SPF"   == "AUSENTE" ] && s2="${s2}- [ ] Configurar registro SPF en DNS\n"
+[ "$CYBER_DMARC" == "AUSENTE" ] && s2="${s2}- [ ] Configurar registro DMARC en DNS\n"
+[ "$CYBER_DKIM"  == "AUSENTE" ] && s2="${s2}- [ ] Configurar DKIM en el servidor de correo\n"
+[ "$LEGAL_COOKIES" != "true"  ] && s2="${s2}- [ ] Implementar banner de cookies GDPR\n"
+[ "$LEGAL_PRIVACY" != "true"  ] && s2="${s2}- [ ] Publicar política de privacidad\n"
+[ -z "$s2" ] && s2="- [ ] Revisar métricas Core Web Vitals y optimizar LCP\n"
+
+# Sprint 3 — Mejoras estratégicas
+[ "$SEO_SCHEMA"  != "true"    ] && s3="${s3}- [ ] Implementar Schema.org (structured data)\n"
+[ "$CT_PWA_MANIFEST" != "true" ] && s3="${s3}- [ ] Crear manifest.json para soporte PWA\n"
+[ "$DIS_DARK_MODE" != "true"  ] && s3="${s3}- [ ] Implementar soporte dark mode\n"
+s3="${s3}- [ ] Auditoría WCAG 2.1 AA completa con herramienta especializada\n"
+s3="${s3}- [ ] Monitoreo continuo de uptime y Core Web Vitals\n"
+s3="${s3}- [ ] Revisión legal de política de privacidad por asesor\n"
+
+echo "### Sprint 1 — Esta semana *(críticos · bajo esfuerzo)*"
+printf "$s1"
+echo ""
+echo "### Sprint 2 — Próximas 4 semanas"
+printf "$s2"
+echo ""
+echo "### Sprint 3 — Próximos 3 meses"
+printf "$s3"
+)
 
 ---
 
-*[homium-audit](https://github.com/homium-tech/audit) v1.1.0 · ${DATE_HUMAN}*
+## 💬 Conclusión
+
+$(
+# Identificar dimensiones más fuertes y más débiles
+best_dim=""; best_score=0
+worst_dim=""; worst_score=101
+declare_scores="performance:$SCORE_PERFORMANCE seo:$SCORE_SEO accesibilidad:$SCORE_ACCESIBILIDAD seguridad:$SCORE_SEGURIDAD ciberseguridad:$SCORE_CIBERSEGURIDAD calidad_tecnica:$SCORE_CALIDAD_TECNICA diseno:$SCORE_DISENO ux:$SCORE_UX"
+for pair in $declare_scores; do
+  dim="${pair%%:*}"; val="${pair##*:}"
+  (( val > best_score  )) && best_score=$val  && best_dim=$dim
+  (( val < worst_score )) && worst_score=$val && worst_dim=$dim
+done
+
+# Estado global
+if   (( SCORE_GLOBAL >= 80 )); then estado="sólido"
+elif (( SCORE_GLOBAL >= 60 )); then estado="aceptable con oportunidades claras de mejora"
+else                                 estado="con brechas importantes que requieren atención prioritaria"
+fi
+
+# Párrafo de apertura
+echo "De acuerdo al análisis realizado por **Homium**, el sitio **${domain}** obtuvo un score global de **${SCORE_GLOBAL}/100**, lo que refleja un sitio ${estado}."
+echo ""
+
+# Lo positivo
+echo "**Lo que está funcionando a favor:**"
+if   (( best_score >= 80 )); then
+  echo "El sitio muestra una fortaleza destacada en **${best_dim//_/ } (${best_score}/100)**$([ "$SCORE_PERFORMANCE" -ge 80 ] && echo ", con tiempos de carga que garantizan una experiencia fluida para el visitante" || echo ""). Esa base es valiosa — y es sobre ella que se construye todo lo demás."
+else
+  echo "Si bien ninguna dimensión alcanza el nivel óptimo, el sitio tiene elementos de base funcionales que facilitan un camino de mejora estructurado."
+fi
+echo ""
+
+# Lo que requiere atención
+echo "**Lo que está costando oportunidades:**"
+[ "$SEC_HSTS" != "true" ] || [ "$SEC_CSP" != "true" ] && \
+  echo "El sitio no cuenta con las protecciones de seguridad estándar, lo que significa que los datos de los visitantes están expuestos a riesgos evitables — algo que puede dañar la reputación de la marca de forma difícil de revertir."
+[ "${ACC_IMGS_NO_ALT:-0}" -gt 0 ] || [ "$ACC_ARIA" != "true" ] && \
+  echo "Una parte de los usuarios — personas con discapacidad visual o motora — no puede navegar el sitio con comodidad, lo que reduce el alcance real de la audiencia y puede representar un riesgo legal en mercados con regulaciones de accesibilidad."
+[ "$LEGAL_COOKIES" != "true" ] || [ "$LEGAL_PRIVACY" != "true" ] && \
+  echo "La ausencia de mecanismos de consentimiento visibles expone al negocio a sanciones significativas bajo normativa GDPR — un riesgo legal prevenible con bajo esfuerzo."
+[ "$SEO_TITLE" == "AUSENTE" ] || [ "$SEO_META_DESC" == "AUSENTE" ] && \
+  echo "Las páginas carecen de elementos SEO fundamentales, lo que limita directamente la visibilidad en buscadores y reduce el tráfico orgánico potencial."
+echo ""
+
+# Perspectiva de cierre
+echo "**Perspectiva general:**"
+if (( SCORE_GLOBAL >= 80 )); then
+  echo "Con ajustes puntuales en las áreas identificadas, **${domain}** puede consolidarse como referente en su categoría. Las mejoras recomendadas son de bajo esfuerzo y alto impacto — una inversión que se traduce directamente en confianza, alcance y conversión."
+elif (( SCORE_GLOBAL >= 60 )); then
+  echo "Resolver las brechas prioritarias no es solo una cuestión técnica — es una decisión de negocio. Un sitio seguro genera más confianza y más conversiones. Uno accesible llega a más personas. Con las acciones del Sprint 1 implementadas, **${domain}** puede alcanzar un score de **$(( SCORE_GLOBAL + 15 ))+/100** en menos de dos semanas."
+else
+  echo "El camino de mejora es claro y los beneficios, tangibles. Atender las brechas críticas identificadas posicionará a **${domain}** en un estado competitivo en menos de un mes, con impacto directo en seguridad, posicionamiento y experiencia del usuario."
+fi
+)
+
+---
+
+*[homium-audit](https://github.com/homium-tech/audit) v1.2.0 · ${DATE_HUMAN}*
 MDEOF
 }
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 main() {
   echo -e "\n${BOLD}${CYAN}╔══════════════════════════════════════════════╗${RESET}"
-  echo -e "${BOLD}${CYAN}║        homium-audit v1.1.0                   ║${RESET}"
+  echo -e "${BOLD}${CYAN}║        homium-audit v${SCRIPT_VERSION}                 ║${RESET}"
   echo -e "${BOLD}${CYAN}║  Auditoría web profesional · 8 dimensiones   ║${RESET}"
   echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════════╝${RESET}\n"
 
@@ -1126,21 +1811,63 @@ main() {
 
   find_previous_report "$SLUG"
 
-  analyze_performance
-  analyze_seo
-  analyze_accesibilidad
-  analyze_seguridad
-  analyze_ciberseguridad
-  analyze_calidad_tecnica
-  analyze_diseno
-  analyze_ux
+  info "Descargando página..."
+  HTML_CACHE=$(fetch_url "$URL")
+  ok "Página descargada ($(echo "$HTML_CACHE" | wc -c | tr -d '[:space:]') bytes)"
+
+  [[ -n "$DIMENSIONS" ]] && info "Dimensiones: ${BOLD}${DIMENSIONS}${RESET}" || true
+  [[ -n "$SECTOR"     ]] && info "Sector: ${BOLD}${SECTOR}${RESET}"         || true
+
+  should_run "performance"    && analyze_performance    || true
+  should_run "seo"            && analyze_seo            || true
+  should_run "accesibilidad"  && analyze_accesibilidad  || true
+  should_run "seguridad"      && analyze_seguridad      || true
+  should_run "ciberseguridad" && analyze_ciberseguridad || true
+  should_run "calidad"        && analyze_calidad_tecnica || true
+  should_run "diseno"         && analyze_diseno         || true
+  should_run "ux"             && analyze_ux             || true
+  analyze_tecnologia
   analyze_legal
+
+  # Extraer screenshots de Lighthouse si están disponibles
+  SCREENSHOT_MOBILE=""; SCREENSHOT_DESKTOP=""
+  if command -v jq &>/dev/null; then
+    if [[ "$LH_DONE_MOBILE" == true && -f "$LH_JSON_MOBILE" ]]; then
+      local ss_data
+      ss_data=$(jq -r '.audits["final-screenshot"].details.data // ""' "$LH_JSON_MOBILE" 2>/dev/null || echo "")
+      if [[ -n "$ss_data" && "$ss_data" != "null" ]]; then
+        local ss_file="${OUTPUT_DIR}/screenshot-mobile-${SLUG}-${TIMESTAMP}.jpg"
+        echo "$ss_data" | sed 's|data:image/jpeg;base64,||' | base64 -d > "$ss_file" 2>/dev/null \
+          && SCREENSHOT_MOBILE="$ss_file" || true
+        [[ -n "$SCREENSHOT_MOBILE" ]] && ok "Screenshot mobile guardado" || true
+      fi
+    fi
+    if [[ "$LH_DONE_DESKTOP" == true && -f "$LH_JSON_DESKTOP" ]]; then
+      local ss_data
+      ss_data=$(jq -r '.audits["final-screenshot"].details.data // ""' "$LH_JSON_DESKTOP" 2>/dev/null || echo "")
+      if [[ -n "$ss_data" && "$ss_data" != "null" ]]; then
+        local ss_file="${OUTPUT_DIR}/screenshot-desktop-${SLUG}-${TIMESTAMP}.jpg"
+        echo "$ss_data" | sed 's|data:image/jpeg;base64,||' | base64 -d > "$ss_file" 2>/dev/null \
+          && SCREENSHOT_DESKTOP="$ss_file" || true
+        [[ -n "$SCREENSHOT_DESKTOP" ]] && ok "Screenshot desktop guardado" || true
+      fi
+    fi
+  fi
 
   compute_global_score
 
   step "Generando reporte"
   generate_report "$OUT_FILE" "${PREV_REPORT:-}"
   ok "Reporte guardado: ${BOLD}${OUT_FILE}${RESET}"
+
+  if [[ -n "${THRESHOLD:-}" ]]; then
+    if (( SCORE_GLOBAL < THRESHOLD )); then
+      echo -e "\n${RED}${CROSS} Score global ${SCORE_GLOBAL} < threshold ${THRESHOLD} — FALLÓ${RESET}" >&2
+      exit 1
+    else
+      echo -e "\n${GREEN}${CHECK} Score global ${SCORE_GLOBAL} ≥ threshold ${THRESHOLD} — OK${RESET}"
+    fi
+  fi
 
   echo ""
   echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
