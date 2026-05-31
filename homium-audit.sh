@@ -116,8 +116,8 @@ err()  { echo -e "${RED}${CROSS}${RESET} $*" >&2; }
 step() { [[ "$QUIET" == false ]] && echo -e "\n${CYAN}${BOLD}━━ $* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}" || true; }
 
 normalize_domain() {
-  echo "$1" | sed 's|https\?://||' | sed 's|www\.||' | sed 's|[/?#].*||' \
-    | sed 's|[^a-zA-Z0-9]|-|g' | tr '[:upper:]' '[:lower:]' \
+  echo "$1" | sed 's|https://||' | sed 's|http://||' | sed 's|www\.||' \
+    | sed 's|[/?#].*||' | sed 's|[^a-zA-Z0-9]|-|g' | tr '[:upper:]' '[:lower:]' \
     | sed 's|-\+|-|g' | sed 's|^-||' | sed 's|-$||'
 }
 
@@ -199,21 +199,33 @@ _timeout() {
 ssl_full_info() {
   local domain="$1"
   local raw
-  raw=$(echo | _timeout "$TIMEOUT" openssl s_client \
-    -connect "${domain}:443" -servername "$domain" 2>/dev/null </dev/null) || { return 1; }
+  raw=$(echo "" | _timeout "$TIMEOUT" openssl s_client \
+    -connect "${domain}:443" -servername "$domain" 2>/dev/null) || { return 1; }
 
+  # Extraer campos directamente del output s_client (compatible LibreSSL + OpenSSL)
+  SSL_PROTOCOL=$(echo "$raw" | grep -iE "^\s*Protocol\s*:" | awk -F: '{print $2}' | xargs 2>/dev/null || echo "")
+  [[ -z "$SSL_PROTOCOL" ]] && SSL_PROTOCOL=$(echo "$raw" | grep -oE "TLSv[0-9.]+" | head -1 || echo "Desconocido")
+
+  SSL_CIPHER=$(echo "$raw" | grep -iE "Cipher is" | grep -oE "Cipher is \S+" | sed 's/Cipher is //' | head -1 || echo "")
+  [[ -z "$SSL_CIPHER" ]] && SSL_CIPHER=$(echo "$raw" | grep -iE "^\s*Cipher\s*:" | awk -F: '{print $2}' | xargs 2>/dev/null || echo "Desconocido")
+
+  # Parsear cert con openssl x509 (solo flags compatibles con LibreSSL)
   local cert
-  cert=$(echo "$raw" | openssl x509 -noout \
-    -enddate -issuer -subject -ext subjectAltName 2>/dev/null) || cert=""
+  cert=$(echo "$raw" | openssl x509 -noout -enddate -issuer -subject 2>/dev/null) || cert=""
 
-  SSL_EXPIRY_DATE=$(echo "$cert" | grep "notAfter" | sed 's/notAfter=//' || echo "")
-  SSL_ISSUER=$(echo "$cert" | grep "issuer=" \
-    | sed 's/.*O = \([^,]*\).*/\1/' | head -1 | xargs 2>/dev/null || echo "Desconocido")
-  SSL_SUBJECT=$(echo "$cert" | grep "subject=" \
-    | sed 's/.*CN = \([^,]*\).*/\1/' | head -1 | xargs 2>/dev/null || echo "Desconocido")
-  SSL_SAN=$(echo "$cert" | grep -oE 'DNS:[^,]+' | tr '\n' ' ' | sed 's/DNS://g' || echo "")
-  SSL_PROTOCOL=$(echo "$raw" | grep "Protocol" | awk '{print $3}' | head -1 || echo "Desconocido")
-  SSL_CIPHER=$(echo "$raw"   | grep "Cipher"   | awk '{print $5}' | head -1 || echo "Desconocido")
+  SSL_EXPIRY_DATE=$(echo "$cert" | grep "notAfter" | sed 's/notAfter=//' | xargs 2>/dev/null || echo "")
+  SSL_ISSUER=$(echo "$raw" | grep "^issuer=" \
+    | perl -nle 'if (/O=([^,\/]+)/) { $v=$1; $v=~s/^\s+|\s+$//g; print $v }' | head -1 || echo "Desconocido")
+  [[ -z "$SSL_ISSUER" ]] && SSL_ISSUER="Desconocido"
+  SSL_SUBJECT=$(echo "$cert" | grep "^subject=" \
+    | perl -nle 'if (/CN=([^,\/]+)/) { $v=$1; $v=~s/^\s+|\s+$//g; print $v }' | head -1 || echo "Desconocido")
+
+  # SAN: openssl x509 -text compatible LibreSSL (usar [^, ] en lugar de [^\s,])
+  local san_raw
+  san_raw=$(echo "$raw" | openssl x509 -noout -text 2>/dev/null \
+    | grep -A1 "Subject Alternative Name" | grep "DNS:" || echo "")
+  SSL_SAN=$(echo "$san_raw" | grep -oE 'DNS:[^, ]+' | sed 's/DNS://g' | tr '\n' ' ' \
+    | sed 's/^ *//;s/ *$//' || echo "")
 
   if [[ -n "$SSL_EXPIRY_DATE" ]]; then
     local exp_epoch now_epoch
@@ -576,7 +588,8 @@ analyze_seo() {
 
   info "Extrayendo logo e imagen del sitio..."
   SITE_OG_IMAGE=$(echo "$HTML_CACHE" | grep -i 'property="og:image"' \
-    | sed 's/.*content="\([^"]*\)".*/\1/' | head -1 | xargs 2>/dev/null) || SITE_OG_IMAGE=""
+    | grep -oiE 'content="[^"]+"' | sed 's/content="\([^"]*\)"/\1/' \
+    | head -1 | xargs 2>/dev/null) || SITE_OG_IMAGE=""
   SITE_FAVICON=$(echo "$HTML_CACHE" | grep -iE 'rel="(icon|shortcut icon)"' \
     | sed 's/.*href="\([^"]*\)".*/\1/' | head -1 | xargs 2>/dev/null) || SITE_FAVICON=""
   # Normalizar favicon relativo a URL absoluta
@@ -788,11 +801,10 @@ analyze_seguridad() {
   [[ "$http_code" == "301" || "$http_code" == "302" ]] && SEC_HTTPS_REDIRECT=true || SEC_HTTPS_REDIRECT=false
   [[ "$SEC_HTTPS_REDIRECT" == false ]] && score=$((score-15)) || true
 
-  # SSL expiry
-  info "Verificando expiración SSL..."
-  local ssl_days
-  ssl_days=$(ssl_days_remaining "$domain")
-  SEC_SSL_DAYS=${ssl_days:--1}
+  # SSL — llamar ssl_full_info directamente (no en subshell) para preservar variables
+  info "Verificando SSL..."
+  ssl_full_info "$domain" 2>/dev/null || true
+  SEC_SSL_DAYS=${SSL_DAYS_LEFT:--1}
   if   (( SEC_SSL_DAYS < 0   )); then SEC_SSL_EXPIRY_NOTE="No se pudo verificar"
   elif (( SEC_SSL_DAYS == 0  )); then SEC_SSL_EXPIRY_NOTE="🔴 EXPIRADO";                              score=$((score-40))
   elif (( SEC_SSL_DAYS <= 7  )); then SEC_SSL_EXPIRY_NOTE="🔴 Expira en ${SEC_SSL_DAYS}d — URGENTE"; score=$((score-30))
@@ -1088,10 +1100,27 @@ generate_report() {
   local domain="${URL#*://}"; domain="${domain%%/*}"
   local global_badge; global_badge=$(score_badge "$SCORE_GLOBAL")
 
+  # Pre-computar benchmarks por sector (fuera del heredoc)
+  local bp bs ba bsec bcy bct bd bu tp ts ta tsec tcy tct td tu
+  case "${SECTOR:-general}" in
+    ecommerce) bp=72 bs=75 ba=58 bsec=55 bcy=50 bct=65 bd=70 bu=75
+               tp=92 ts=92 ta=85 tsec=88 tcy=82 tct=88 td=92 tu=92 ;;
+    saas)      bp=70 bs=68 ba=60 bsec=65 bcy=58 bct=70 bd=65 bu=70
+               tp=92 ts=88 ta=88 tsec=92 tcy=85 tct=90 td=88 tu=90 ;;
+    blog)      bp=68 bs=80 ba=55 bsec=48 bcy=42 bct=62 bd=60 bu=62
+               tp=90 ts=95 ta=82 tsec=80 tcy=75 tct=85 td=85 tu=85 ;;
+    landing)   bp=75 bs=70 ba=55 bsec=50 bcy=45 bct=60 bd=72 bu=78
+               tp=95 ts=90 ta=82 tsec=85 tcy=80 tct=85 td=92 tu=92 ;;
+    portfolio) bp=65 bs=65 ba=55 bsec=48 bcy=42 bct=62 bd=80 bu=70
+               tp=90 ts=85 ta=82 tsec=80 tcy=75 tct=85 td=95 tu=90 ;;
+    *)         bp=65 bs=70 ba=55 bsec=50 bcy=45 bct=60 bd=65 bu=60
+               tp=90 ts=90 ta=85 tsec=90 tcy=85 tct=85 td=90 tu=88 ;;
+  esac
+
   cat > "$out_file" << MDEOF
 # 🔍 Auditoría Web Profesional — ${domain}
 
-> **Generado por:** [homium-audit](https://github.com/homium-tech/audit) v1.1.0
+> **Generado por:** [homium-audit](https://github.com/homium-tech/audit) v${SCRIPT_VERSION}
 > **Fecha:** ${DATE_HUMAN}
 > **URL:** ${URL}
 
@@ -1150,30 +1179,16 @@ fi)
 
 ## 🏆 Benchmarking $([ -n "${SECTOR:-}" ] && echo "— Sector: ${SECTOR}")
 
-$(
-# Promedios por sector: perf seo acc seg cyber calidad dis ux
-case "${SECTOR:-general}" in
-  ecommerce) B="72 75 58 55 50 65 70 75" T="92 92 85 88 82 88 92 92" ;;
-  saas)      B="70 68 60 65 58 70 65 70" T="92 88 88 92 85 90 88 90" ;;
-  blog)      B="68 80 55 48 42 62 60 62" T="90 95 82 80 75 85 85 85" ;;
-  landing)   B="75 70 55 50 45 60 72 78" T="95 90 82 85 80 85 92 92" ;;
-  portfolio) B="65 65 55 48 42 62 80 70" T="90 85 82 80 75 85 95 90" ;;
-  *)         B="65 70 55 50 45 60 65 60" T="90 90 85 90 85 85 90 88" ;;
-esac
-set -- $B; bp=$1 bs=$2 ba=$3 bsec=$4 bcy=$5 bct=$6 bd=$7 bu=$8
-set -- $T; tp=$1 ts=$2 ta=$3 tsec=$4 tcy=$5 tct=$6 td=$7 tu=$8
-
-echo "| Dimensión | Tu sitio | Promedio sector | Top 10% |"
-echo "|-----------|:--------:|:--------------:|:-------:|"
-echo "| Performance | ${SCORE_PERFORMANCE} | ${bp} | ${tp}+ |"
-echo "| SEO | ${SCORE_SEO} | ${bs} | ${ts}+ |"
-echo "| Accesibilidad | ${SCORE_ACCESIBILIDAD} | ${ba} | ${ta}+ |"
-echo "| Seguridad | ${SCORE_SEGURIDAD} | ${bsec} | ${tsec}+ |"
-echo "| Ciberseguridad | ${SCORE_CIBERSEGURIDAD} | ${bcy} | ${tcy}+ |"
-echo "| Calidad Técnica | ${SCORE_CALIDAD_TECNICA} | ${bct} | ${tct}+ |"
-echo "| Diseño | ${SCORE_DISENO} | ${bd} | ${td}+ |"
-echo "| UX | ${SCORE_UX} | ${bu} | ${tu}+ |"
-)
+| Dimensión | Tu sitio | Promedio sector | Top 10% |
+|-----------|:--------:|:--------------:|:-------:|
+| Performance | ${SCORE_PERFORMANCE} | ${bp} | ${tp}+ |
+| SEO | ${SCORE_SEO} | ${bs} | ${ts}+ |
+| Accesibilidad | ${SCORE_ACCESIBILIDAD} | ${ba} | ${ta}+ |
+| Seguridad | ${SCORE_SEGURIDAD} | ${bsec} | ${tsec}+ |
+| Ciberseguridad | ${SCORE_CIBERSEGURIDAD} | ${bcy} | ${tcy}+ |
+| Calidad Técnica | ${SCORE_CALIDAD_TECNICA} | ${bct} | ${tct}+ |
+| Diseño | ${SCORE_DISENO} | ${bd} | ${td}+ |
+| UX | ${SCORE_UX} | ${bu} | ${tu}+ |
 
 ---
 
@@ -1720,13 +1735,13 @@ s3="${s3}- [ ] Monitoreo continuo de uptime y Core Web Vitals\n"
 s3="${s3}- [ ] Revisión legal de política de privacidad por asesor\n"
 
 echo "### Sprint 1 — Esta semana *(críticos · bajo esfuerzo)*"
-printf "$s1"
+printf "%s" "$s1" | sed 's/\\n/\n/g'
 echo ""
 echo "### Sprint 2 — Próximas 4 semanas"
-printf "$s2"
+printf "%s" "$s2" | sed 's/\\n/\n/g'
 echo ""
 echo "### Sprint 3 — Próximos 3 meses"
-printf "$s3"
+printf "%s" "$s3" | sed 's/\\n/\n/g'
 )
 
 ---
