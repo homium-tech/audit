@@ -183,6 +183,14 @@ homium-audit/
 
 ## 📋 Changelog
 
+### v1.2.1 — Bugfixes
+- **Slug de dominio** — `normalize_domain` usaba `\?` (no soportado en BSD sed de macOS); reemplazado por dos `sed` separados para `http://` y `https://`. El nombre del reporte ahora es `reporte-dominio-co-...` en lugar de `reporte-https-...`
+- **Benchmarking** — El `case` dentro de `$()` en el heredoc fallaba en bash 3; los valores se pre-computan antes del heredoc y se insertan como variables simples
+- **Sprint plan** — `printf "$s1"` interpretaba el `-` de `- [ ]` como flag; corregido con `printf "%s" | sed 's/\\n/\n/g'`
+- **og:image** — El `sed` extraía el primer `content=` de la línea en lugar del de `og:image`; corregido con `grep -oE 'content="..."'` previo al sed
+- **SSL en subshell** — `ssl_full_info` se ejecutaba en subshell vía `$()` y sus variables no regresaban al scope padre; ahora se llama directamente en `analyze_seguridad`
+- **SSL parsing** — Issuer usaba `xargs` que fallaba con el apostrofe en "Let's Encrypt"; reemplazado por perl trim. SAN usaba `[^\s,]` donde `\s` es literal en BSD grep, causando que "home**s**esas.co" se truncara a "home"; corregido con `[^, ]`
+
 ### v1.2.0
 - **Lighthouse dual** — Mobile + Desktop en una sola auditoría con tabla comparativa
 - **Core Web Vitals** — LCP, FCP, TBT, CLS, Speed Index por dispositivo
