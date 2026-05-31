@@ -28,6 +28,32 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 DATE_HUMAN=$(date +"%d de %B de %Y")
 TIMEOUT=30
 
+# Resolver lighthouse: binario global o npx fallback
+if command -v lighthouse &>/dev/null; then
+  LH_CMD="lighthouse"
+elif npx lighthouse --version &>/dev/null 2>&1; then
+  LH_CMD="npx lighthouse"
+else
+  LH_CMD=""
+fi
+
+# Resolver herramientas opcionales via npx si no están globales
+resolve_npx_tool() {
+  local tool="$1" pkg="${2:-$1}"
+  if command -v "$tool" &>/dev/null; then
+    echo "$tool"
+  elif npx --yes "$pkg" --version &>/dev/null 2>&1; then
+    echo "npx $pkg"
+  else
+    echo ""
+  fi
+}
+
+AXE_CMD=$(resolve_npx_tool "axe" "@axe-core/cli")
+PA11Y_CMD=$(resolve_npx_tool "pa11y" "pa11y")
+HTMLHINT_CMD=$(resolve_npx_tool "htmlhint" "htmlhint")
+SSLCHECK_CMD=$(resolve_npx_tool "ssl-checker" "ssl-checker")
+
 # ─── Usage ───────────────────────────────────────────────────────────────────
 usage() {
   echo -e "${BOLD}homium-audit${RESET} — Auditoría profesional de sitios web"
@@ -143,8 +169,14 @@ severity_badge() {
 
 # Check tool availability
 require_tool() {
-  if ! command -v "$1" &>/dev/null; then
-    warn "Herramienta no disponible: ${BOLD}$1${RESET} — análisis parcial en esta dimensión."
+  local tool="$1"
+  if [[ "$tool" == "lighthouse" ]]; then
+    [[ -n "$LH_CMD" ]] && return 0
+    warn "Herramienta no disponible: ${BOLD}lighthouse${RESET} — análisis parcial en esta dimensión."
+    return 1
+  fi
+  if ! command -v "$tool" &>/dev/null; then
+    warn "Herramienta no disponible: ${BOLD}$tool${RESET} — análisis parcial en esta dimensión."
     return 1
   fi
   return 0
@@ -176,14 +208,24 @@ response_time_ms() {
     "$1" 2>/dev/null | awk '{printf "%d", $1*1000}' || echo "0"
 }
 
-# TLS/SSL info
+# TLS/SSL info con expiración
 check_tls() {
   local domain="$1"
   local result
-  result=$(echo | timeout "$TIMEOUT" openssl s_client -connect "${domain}:443" \
-    -servername "$domain" 2>/dev/null </dev/null | \
-    openssl x509 -noout -dates -subject 2>/dev/null) || true
+  result=$(echo | timeout "$TIMEOUT" openssl s_client -connect "${domain}:443"     -servername "$domain" 2>/dev/null </dev/null |     openssl x509 -noout -dates -subject 2>/dev/null) || true
   echo "$result"
+}
+
+# Días hasta expiración del certificado SSL
+ssl_days_remaining() {
+  local domain="$1"
+  local expiry_date
+  expiry_date=$(echo | timeout "$TIMEOUT" openssl s_client     -connect "${domain}:443" -servername "$domain" 2>/dev/null </dev/null     | openssl x509 -noout -enddate 2>/dev/null     | sed 's/notAfter=//') || { echo "-1"; return; }
+  [[ -z "$expiry_date" ]] && { echo "-1"; return; }
+  local expiry_epoch now_epoch
+  expiry_epoch=$(date -d "$expiry_date" +%s 2>/dev/null || date -jf "%b %d %T %Y %Z" "$expiry_date" +%s 2>/dev/null) || { echo "-1"; return; }
+  now_epoch=$(date +%s)
+  echo $(( (expiry_epoch - now_epoch) / 86400 ))
 }
 
 # ─── Dependency Check ─────────────────────────────────────────────────────────
@@ -191,7 +233,7 @@ check_dependencies() {
   step "Verificando dependencias"
   local missing=()
   local tools=(curl openssl)
-  local optional=(lighthouse htmlq jq node npm)
+  local optional=(htmlq jq node npm)
 
   for t in "${tools[@]}"; do
     if command -v "$t" &>/dev/null; then ok "$t"; else missing+=("$t"); err "$t (requerido)"; fi
@@ -200,11 +242,54 @@ check_dependencies() {
     if command -v "$t" &>/dev/null; then ok "$t"; else warn "$t (opcional — análisis reducido)"; fi
   done
 
+  # Lighthouse via global o npx
+  if [[ -n "$LH_CMD" ]]; then
+    ok "lighthouse (${LH_CMD})"
+  else
+    warn "lighthouse (opcional — npm install -g lighthouse)"
+  fi
+
+  # Herramientas opcionales adicionales
+  for pair in "axe:AXE_CMD:@axe-core/cli" "pa11y:PA11Y_CMD:pa11y" "htmlhint:HTMLHINT_CMD:htmlhint" "ssl-checker:SSLCHECK_CMD:ssl-checker"; do
+    local tname="${pair%%:*}" rest="${pair#*:}" varname="${rest%%:*}" pkg="${rest##*:}"
+    local cmd="${!varname}"
+    if [[ -n "$cmd" ]]; then
+      ok "${tname} (${cmd})"
+    else
+      warn "${tname} (opcional — npm i -g ${pkg})"
+    fi
+  done
+
   if [[ ${#missing[@]} -gt 0 ]]; then
     err "Faltan herramientas requeridas: ${missing[*]}"
     err "Instálalas y vuelve a intentar."
     exit 1
   fi
+}
+
+# ─── Lighthouse — ejecución única con todas las categorías ───────────────────
+LH_DONE=false
+LH_JSON="${TMPDIR_AUDIT}/lighthouse.json"
+
+run_lighthouse_once() {
+  [[ "$LH_DONE" == true ]] && return 0
+  [[ -z "$LH_CMD" ]] && return 1
+  info "Ejecutando Lighthouse (una sola pasada: performance, SEO, accesibilidad, best-practices)..."
+  if $LH_CMD "$URL"     --output=json     --output-path="$LH_JSON"     --only-categories=performance,seo,accessibility,best-practices     --chrome-flags="--headless --no-sandbox --disable-gpu"     --quiet 2>/dev/null; then
+    LH_DONE=true
+    ok "Lighthouse completado"
+    return 0
+  fi
+  return 1
+}
+
+lh_score() {
+  local key="$1"   # performance | seo | accessibility | best-practices
+  [[ "$LH_DONE" != true ]] && { echo ""; return; }
+  command -v jq &>/dev/null || { echo ""; return; }
+  local raw
+  raw=$(jq ".categories["${key}"].score // 0" "$LH_JSON" 2>/dev/null) || { echo ""; return; }
+  awk "BEGIN{printf "%d", ${raw} * 100}"
 }
 
 # ─── Data Storage (JSON tempfile) ─────────────────────────────────────────────
@@ -290,25 +375,12 @@ analyze_performance() {
   PERF_COMPRESSION="${encoding:-Sin compresión}"
   [[ -z "$encoding" ]] && score=$((score - 10))
 
-  # Lighthouse (si está disponible)
+  # Lighthouse — una sola ejecución compartida
   PERF_LH_SCORE=""
   if require_tool "lighthouse" 2>/dev/null; then
-    info "Ejecutando Lighthouse performance..."
-    local lh_out="${TMPDIR_AUDIT}/lh_perf.json"
-    if lighthouse "$URL" \
-      --output=json \
-      --output-path="$lh_out" \
-      --only-categories=performance \
-      --chrome-flags="--headless --no-sandbox --disable-gpu" \
-      --quiet 2>/dev/null; then
-      if command -v jq &>/dev/null; then
-        local lh_score
-        lh_score=$(jq '.categories.performance.score // 0' "$lh_out" 2>/dev/null)
-        PERF_LH_SCORE=$(awk "BEGIN{printf \"%d\", $lh_score * 100}")
-        # Blend with our score
-        score=$(( (score + PERF_LH_SCORE) / 2 ))
-      fi
-    fi
+    run_lighthouse_once
+    PERF_LH_SCORE=$(lh_score "performance")
+    [[ -n "$PERF_LH_SCORE" ]] && score=$(( (score + PERF_LH_SCORE) / 2 ))
   fi
 
   # Clamp score
@@ -366,6 +438,24 @@ analyze_calidad_tecnica() {
     local links
     links=$(echo "$html_content" | htmlq 'a[href]' --attribute href 2>/dev/null | head -20)
     CT_BROKEN_LINKS=$(echo "$links" | wc -l)
+  fi
+
+  # htmlhint — calidad y buenas prácticas HTML
+  CT_HTMLHINT_ERRORS=0
+  CT_HTMLHINT_WARNINGS=0
+  if [[ -n "$HTMLHINT_CMD" ]]; then
+    info "Ejecutando htmlhint..."
+    local hint_out="${TMPDIR_AUDIT}/htmlhint.txt"
+    local tmp_html="${TMPDIR_AUDIT}/page.html"
+    echo "$html_content" > "$tmp_html"
+    if $HTMLHINT_CMD "$tmp_html" --format json > "$hint_out" 2>/dev/null && command -v jq &>/dev/null; then
+      CT_HTMLHINT_ERRORS=$(jq '[.[].messages[] | select(.type=="error")] | length' "$hint_out" 2>/dev/null || echo 0)
+      CT_HTMLHINT_WARNINGS=$(jq '[.[].messages[] | select(.type=="warning")] | length' "$hint_out" 2>/dev/null || echo 0)
+      CT_HTMLHINT_ERRORS=${CT_HTMLHINT_ERRORS:-0}
+      CT_HTMLHINT_WARNINGS=${CT_HTMLHINT_WARNINGS:-0}
+      (( CT_HTMLHINT_ERRORS > 5  )) && score=$((score - 10)) || true
+      (( CT_HTMLHINT_ERRORS > 10 )) && score=$((score - 10)) || true
+    fi
   fi
 
   (( score < 0 )) && score=0
@@ -429,23 +519,12 @@ analyze_seo() {
   SEO_SCHEMA="$has_schema"
   [[ "$has_schema" == false ]] && score=$((score - 5))
 
-  # Lighthouse SEO (if available)
+  # Lighthouse SEO — reutiliza ejecución única
   SEO_LH_SCORE=""
   if require_tool "lighthouse" 2>/dev/null; then
-    local lh_out="${TMPDIR_AUDIT}/lh_seo.json"
-    if lighthouse "$URL" \
-      --output=json \
-      --output-path="$lh_out" \
-      --only-categories=seo \
-      --chrome-flags="--headless --no-sandbox --disable-gpu" \
-      --quiet 2>/dev/null; then
-      if command -v jq &>/dev/null; then
-        local lh_score
-        lh_score=$(jq '.categories.seo.score // 0' "$lh_out" 2>/dev/null)
-        SEO_LH_SCORE=$(awk "BEGIN{printf \"%d\", $lh_score * 100}")
-        score=$(( (score + SEO_LH_SCORE) / 2 ))
-      fi
-    fi
+    run_lighthouse_once
+    SEO_LH_SCORE=$(lh_score "seo")
+    [[ -n "$SEO_LH_SCORE" ]] && score=$(( (score + SEO_LH_SCORE) / 2 ))
   fi
 
   (( score < 0 )) && score=0
@@ -497,22 +576,41 @@ analyze_accesibilidad() {
   echo "$html_content" | grep -qi '<html[^>]*lang=' && has_lang=true
   [[ "$has_lang" == false ]] && score=$((score - 10))
 
-  # Lighthouse Accessibility
+  # Lighthouse Accessibility — reutiliza ejecución única
   ACC_LH_SCORE=""
   if require_tool "lighthouse" 2>/dev/null; then
-    local lh_out="${TMPDIR_AUDIT}/lh_acc.json"
-    if lighthouse "$URL" \
-      --output=json \
-      --output-path="$lh_out" \
-      --only-categories=accessibility \
-      --chrome-flags="--headless --no-sandbox --disable-gpu" \
-      --quiet 2>/dev/null; then
-      if command -v jq &>/dev/null; then
-        local lh_score
-        lh_score=$(jq '.categories.accessibility.score // 0' "$lh_out" 2>/dev/null)
-        ACC_LH_SCORE=$(awk "BEGIN{printf \"%d\", $lh_score * 100}")
-        score=$(( (score + ACC_LH_SCORE) / 2 ))
-      fi
+    run_lighthouse_once
+    ACC_LH_SCORE=$(lh_score "accessibility")
+    [[ -n "$ACC_LH_SCORE" ]] && score=$(( (score + ACC_LH_SCORE) / 2 ))
+  fi
+
+  # axe-core — análisis WCAG profundo
+  ACC_AXE_VIOLATIONS=0
+  ACC_AXE_SERIOUS=0
+  if [[ -n "$AXE_CMD" ]]; then
+    info "Ejecutando axe-core (WCAG)..."
+    local axe_out="${TMPDIR_AUDIT}/axe.json"
+    if $AXE_CMD "$URL" --save "$axe_out" --quiet 2>/dev/null && command -v jq &>/dev/null; then
+      ACC_AXE_VIOLATIONS=$(jq '[.violations[].nodes[]] | length' "$axe_out" 2>/dev/null || echo 0)
+      ACC_AXE_SERIOUS=$(jq '[.violations[] | select(.impact=="serious" or .impact=="critical") | .nodes[]] | length' "$axe_out" 2>/dev/null || echo 0)
+      ACC_AXE_VIOLATIONS=${ACC_AXE_VIOLATIONS:-0}
+      ACC_AXE_SERIOUS=${ACC_AXE_SERIOUS:-0}
+      (( ACC_AXE_SERIOUS > 0 )) && score=$((score - ACC_AXE_SERIOUS * 3 > 20 ? 20 : ACC_AXE_SERIOUS * 3)) || true
+    fi
+  fi
+
+  # pa11y — reporte WCAG complementario
+  ACC_PA11Y_ERRORS=0
+  ACC_PA11Y_WARNINGS=0
+  if [[ -n "$PA11Y_CMD" ]]; then
+    info "Ejecutando pa11y..."
+    local pa11y_out="${TMPDIR_AUDIT}/pa11y.json"
+    if $PA11Y_CMD "$URL" --reporter json > "$pa11y_out" 2>/dev/null && command -v jq &>/dev/null; then
+      ACC_PA11Y_ERRORS=$(jq '[.[] | select(.type=="error")] | length' "$pa11y_out" 2>/dev/null || echo 0)
+      ACC_PA11Y_WARNINGS=$(jq '[.[] | select(.type=="warning")] | length' "$pa11y_out" 2>/dev/null || echo 0)
+      ACC_PA11Y_ERRORS=${ACC_PA11Y_ERRORS:-0}
+      ACC_PA11Y_WARNINGS=${ACC_PA11Y_WARNINGS:-0}
+      (( ACC_PA11Y_ERRORS > 0 )) && score=$((score - ACC_PA11Y_ERRORS * 2 > 15 ? 15 : ACC_PA11Y_ERRORS * 2)) || true
     fi
   fi
 
@@ -522,10 +620,100 @@ analyze_accesibilidad() {
   ok "Accesibilidad score: $(score_color $score)"
 }
 
+# ─── Hosting & Domain Lookup ──────────────────────────────────────────────────
+lookup_hosting_domain() {
+  local domain="$1"
+
+  # ── IP del servidor ──
+  info "Resolviendo IP del servidor..."
+  SEC_HOST_IP=$(dig +short A "$domain" 2>/dev/null | grep -E '^[0-9]+\.' | head -1)     || SEC_HOST_IP=$(curl -sSL --max-time 10 "https://dns.google/resolve?name=${domain}&type=A"     2>/dev/null | grep -oP '"data":"\K[0-9.]+' | head -1) || SEC_HOST_IP=""
+  SEC_HOST_IP="${SEC_HOST_IP:-No resuelto}"
+
+  # ── Geolocalización + proveedor hosting (ipinfo.io — free tier) ──
+  SEC_HOST_PROVIDER="Desconocido"
+  SEC_HOST_COUNTRY="Desconocido"
+  SEC_HOST_CITY="Desconocido"
+  SEC_HOST_ASN="Desconocido"
+  SEC_HOST_ORG="Desconocido"
+
+  if [[ "$SEC_HOST_IP" != "No resuelto" ]]; then
+    info "Geolocalizando IP ${SEC_HOST_IP}..."
+    local geo_json
+    geo_json=$(curl -sSL --max-time 10 "https://ipinfo.io/${SEC_HOST_IP}/json" 2>/dev/null) || geo_json=""
+
+    if [[ -n "$geo_json" ]] && command -v jq &>/dev/null; then
+      SEC_HOST_COUNTRY=$(echo "$geo_json" | jq -r '.country // "Desconocido"')
+      SEC_HOST_CITY=$(echo    "$geo_json" | jq -r '.city    // "Desconocido"')
+      SEC_HOST_ORG=$(echo     "$geo_json" | jq -r '.org     // "Desconocido"')
+      SEC_HOST_ASN=$(echo "$SEC_HOST_ORG" | grep -oP '^AS\d+' || echo "Desconocido")
+      # Proveedor limpio (quitar ASN prefix)
+      SEC_HOST_PROVIDER=$(echo "$SEC_HOST_ORG" | sed 's/^AS[0-9]* //')
+    elif [[ -n "$geo_json" ]]; then
+      # Fallback sin jq — grep básico
+      SEC_HOST_COUNTRY=$(echo "$geo_json" | grep -oP '"country"\s*:\s*"\K[^"]+' | head -1 || echo "Desconocido")
+      SEC_HOST_CITY=$(echo    "$geo_json" | grep -oP '"city"\s*:\s*"\K[^"]+' | head -1 || echo "Desconocido")
+      SEC_HOST_ORG=$(echo     "$geo_json" | grep -oP '"org"\s*:\s*"\K[^"]+' | head -1 || echo "Desconocido")
+      SEC_HOST_PROVIDER=$(echo "$SEC_HOST_ORG" | sed 's/^AS[0-9]* //')
+    fi
+  fi
+
+  # ── Registrador y datos de dominio via WHOIS ──
+  info "Consultando WHOIS del dominio..."
+  SEC_DOM_REGISTRAR="Desconocido"
+  SEC_DOM_CREATED="Desconocido"
+  SEC_DOM_EXPIRES="Desconocido"
+  SEC_DOM_UPDATED="Desconocido"
+  SEC_DOM_NAMESERVERS="Desconocido"
+  SEC_DOM_PRIVACY=false
+  SEC_DOM_EXPIRY_NOTE=""
+  SEC_DOM_DAYS_LEFT=-1
+
+  local whois_raw=""
+  if command -v whois &>/dev/null; then
+    whois_raw=$(whois "$domain" 2>/dev/null | head -80) || whois_raw=""
+  fi
+
+  if [[ -n "$whois_raw" ]]; then
+    SEC_DOM_REGISTRAR=$(echo "$whois_raw" | grep -iE "^registrar:" | head -1 | sed 's/[Rr]egistrar:\s*//' | xargs)
+    SEC_DOM_CREATED=$(echo   "$whois_raw" | grep -iE "creation date|created:" | head -1 | grep -oP '\d{4}-\d{2}-\d{2}' | head -1)
+    SEC_DOM_EXPIRES=$(echo   "$whois_raw" | grep -iE "expir(y|ation) date|expires:" | head -1 | grep -oP '\d{4}-\d{2}-\d{2}' | head -1)
+    SEC_DOM_UPDATED=$(echo   "$whois_raw" | grep -iE "updated date|last.updated:" | head -1 | grep -oP '\d{4}-\d{2}-\d{2}' | head -1)
+    SEC_DOM_NAMESERVERS=$(echo "$whois_raw" | grep -iE "^name server:" | sed 's/[Nn]ame [Ss]erver:\s*//' | xargs | tr ' ' ', ' | cut -c1-80)
+    echo "$whois_raw" | grep -qi "privacy\|redacted\|protected\|proxy" && SEC_DOM_PRIVACY=true
+
+    # Días hasta expiración del dominio
+    if [[ -n "$SEC_DOM_EXPIRES" ]]; then
+      local exp_epoch now_epoch
+      exp_epoch=$(date -d "$SEC_DOM_EXPIRES" +%s 2>/dev/null) || exp_epoch=""
+      now_epoch=$(date +%s)
+      if [[ -n "$exp_epoch" ]]; then
+        SEC_DOM_DAYS_LEFT=$(( (exp_epoch - now_epoch) / 86400 ))
+        if   (( SEC_DOM_DAYS_LEFT <= 0   )); then SEC_DOM_EXPIRY_NOTE="🔴 EXPIRADO"
+        elif (( SEC_DOM_DAYS_LEFT <= 30  )); then SEC_DOM_EXPIRY_NOTE="🔴 Expira en ${SEC_DOM_DAYS_LEFT} días — RENOVAR URGENTE"
+        elif (( SEC_DOM_DAYS_LEFT <= 90  )); then SEC_DOM_EXPIRY_NOTE="🟠 Expira en ${SEC_DOM_DAYS_LEFT} días"
+        elif (( SEC_DOM_DAYS_LEFT <= 180 )); then SEC_DOM_EXPIRY_NOTE="🟡 Expira en ${SEC_DOM_DAYS_LEFT} días"
+        else                                      SEC_DOM_EXPIRY_NOTE="🟢 Válido por ${SEC_DOM_DAYS_LEFT} días"
+        fi
+      fi
+    fi
+    [[ -z "$SEC_DOM_REGISTRAR"   ]] && SEC_DOM_REGISTRAR="Desconocido"
+    [[ -z "$SEC_DOM_CREATED"     ]] && SEC_DOM_CREATED="Desconocido"
+    [[ -z "$SEC_DOM_EXPIRES"     ]] && SEC_DOM_EXPIRES="Desconocido"
+    [[ -z "$SEC_DOM_NAMESERVERS" ]] && SEC_DOM_NAMESERVERS="Desconocido"
+  else
+    warn "whois no disponible — datos de dominio omitidos"
+  fi
+}
+
 # ─── DIMENSION 5: Seguridad HTTP ──────────────────────────────────────────────
 analyze_seguridad() {
   step "Analizando Seguridad"
   local score=100
+
+  # Hosting & dominio
+  local domain="${URL#*://}"
+  domain="${domain%%/*}"
+  lookup_hosting_domain "$domain"
 
   # Headers de seguridad
   local headers
@@ -548,8 +736,6 @@ analyze_seguridad() {
   [[ "$SEC_PER"  == false ]] && score=$((score - 10))
 
   # HTTPS redirect
-  local domain="${URL#*://}"
-  domain="${domain%%/*}"
   local http_status_code
   http_status_code=$(http_status "http://${domain}")
   if [[ "$http_status_code" == "301" || "$http_status_code" == "302" ]]; then
@@ -559,10 +745,41 @@ analyze_seguridad() {
     score=$((score - 15))
   fi
 
-  # TLS version
+  # TLS — expiración con openssl
   local tls_info
   tls_info=$(check_tls "$domain") || tls_info=""
   SEC_TLS_INFO="${tls_info:-No disponible}"
+
+  info "Verificando expiración del certificado SSL..."
+  local ssl_days
+  ssl_days=$(ssl_days_remaining "$domain")
+  SEC_SSL_DAYS="$ssl_days"
+  SEC_SSL_EXPIRY_NOTE=""
+
+  if   (( ssl_days < 0  )); then
+    SEC_SSL_EXPIRY_NOTE="No se pudo verificar"
+  elif (( ssl_days == 0 )); then
+    SEC_SSL_EXPIRY_NOTE="🔴 EXPIRADO"
+    score=$((score - 40))
+  elif (( ssl_days <= 7  )); then
+    SEC_SSL_EXPIRY_NOTE="🔴 Expira en ${ssl_days} días — RENOVAR URGENTE"
+    score=$((score - 30))
+  elif (( ssl_days <= 30 )); then
+    SEC_SSL_EXPIRY_NOTE="🟠 Expira en ${ssl_days} días — programar renovación"
+    score=$((score - 15))
+  elif (( ssl_days <= 90 )); then
+    SEC_SSL_EXPIRY_NOTE="🟡 Expira en ${ssl_days} días"
+    score=$((score - 5))
+  else
+    SEC_SSL_EXPIRY_NOTE="🟢 Válido por ${ssl_days} días"
+  fi
+
+  # ssl-checker — validación adicional si está disponible
+  SEC_SSLCHECK_RESULT=""
+  if [[ -n "$SSLCHECK_CMD" ]]; then
+    info "Ejecutando ssl-checker..."
+    SEC_SSLCHECK_RESULT=$($SSLCHECK_CMD "$domain" 2>/dev/null | head -5) || SEC_SSLCHECK_RESULT="No disponible"
+  fi
 
   # Cookie flags
   local cookie_header
@@ -672,23 +889,12 @@ analyze_diseno() {
   DIS_DARK_MODE=false
   echo "$html_content" | grep -qi "prefers-color-scheme\|color-scheme" && DIS_DARK_MODE=true
 
-  # Lighthouse Best Practices
+  # Lighthouse Best Practices — reutiliza ejecución única
   DIS_LH_SCORE=""
   if require_tool "lighthouse" 2>/dev/null; then
-    local lh_out="${TMPDIR_AUDIT}/lh_bp.json"
-    if lighthouse "$URL" \
-      --output=json \
-      --output-path="$lh_out" \
-      --only-categories=best-practices \
-      --chrome-flags="--headless --no-sandbox --disable-gpu" \
-      --quiet 2>/dev/null; then
-      if command -v jq &>/dev/null; then
-        local lh_score
-        lh_score=$(jq '.categories["best-practices"].score // 0' "$lh_out" 2>/dev/null)
-        DIS_LH_SCORE=$(awk "BEGIN{printf \"%d\", $lh_score * 100}")
-        score=$(( (score + DIS_LH_SCORE) / 2 ))
-      fi
-    fi
+    run_lighthouse_once
+    DIS_LH_SCORE=$(lh_score "best-practices")
+    [[ -n "$DIS_LH_SCORE" ]] && score=$(( (score + DIS_LH_SCORE) / 2 ))
   fi
 
   (( score < 0 )) && score=0
@@ -988,6 +1194,8 @@ $([ -n "${SEO_LH_SCORE:-}" ] && echo "| Lighthouse SEO | ✅ ${SEO_LH_SCORE}/100
 | Skip navigation | $([ "$ACC_SKIP" == "true" ] && echo "✅" || echo "❌") | — |
 | Formularios con labels | $(if (( ACC_FORMS > 0 && ACC_LABELS >= ACC_FORMS )); then echo "✅"; else echo "⚠️"; fi) | ${ACC_FORMS} forms · ${ACC_LABELS} labels |
 $([ -n "${ACC_LH_SCORE:-}" ] && echo "| Lighthouse A11y | ✅ ${ACC_LH_SCORE}/100 | — |")
+$([ -n "$AXE_CMD" ] && echo "| axe-core violations | $([ ${ACC_AXE_VIOLATIONS:-0} -eq 0 ] && echo '✅ 0' || echo "⚠️ ${ACC_AXE_VIOLATIONS}") | ${ACC_AXE_SERIOUS:-0} críticas/serias |")
+$([ -n "$PA11Y_CMD" ] && echo "| pa11y errores | $([ ${ACC_PA11Y_ERRORS:-0} -eq 0 ] && echo '✅ 0' || echo "⚠️ ${ACC_PA11Y_ERRORS}") | ${ACC_PA11Y_WARNINGS:-0} warnings |")
 
 **WCAG 2.1 Compliance estimado:** $(if (( SCORE_ACCESIBILIDAD >= 80 )); then echo "AA parcial"; elif (( SCORE_ACCESIBILIDAD >= 60 )); then echo "A parcial"; else echo "No verificado/Deficiente"; fi)
 
@@ -1004,6 +1212,23 @@ $([ -n "${ACC_LH_SCORE:-}" ] && echo "| Lighthouse A11y | ✅ ${ACC_LH_SCORE}/10
 
 **Score: ${SCORE_SEGURIDAD}/100** $(score_badge $SCORE_SEGURIDAD)
 
+#### 🌐 Infraestructura — Hosting & Dominio
+
+| Elemento | Detalle |
+|----------|---------|
+| **IP del servidor** | \`${SEC_HOST_IP}\` |
+| **Proveedor hosting** | ${SEC_HOST_PROVIDER} |
+| **Ubicación** | ${SEC_HOST_CITY}, ${SEC_HOST_COUNTRY} |
+| **ASN** | ${SEC_HOST_ASN} |
+| **Registrador dominio** | ${SEC_DOM_REGISTRAR} |
+| **Dominio creado** | ${SEC_DOM_CREATED:-Desconocido} |
+| **Dominio expira** | ${SEC_DOM_EXPIRES:-Desconocido} — ${SEC_DOM_EXPIRY_NOTE} |
+| **Última actualización** | ${SEC_DOM_UPDATED:-Desconocido} |
+| **Nameservers** | \`${SEC_DOM_NAMESERVERS}\` |
+| **Privacidad WHOIS** | $([ "$SEC_DOM_PRIVACY" == "true" ] && echo "✅ Activada" || echo "⚠️ Datos expuestos") |
+
+#### 🔐 Headers de Seguridad
+
 | Header de Seguridad | Estado | Importancia |
 |--------------------|--------|-------------|
 | Strict-Transport-Security (HSTS) | $([ "$SEC_HSTS" == "true" ] && echo "✅" || echo "❌ AUSENTE") | 🔴 Crítico |
@@ -1015,8 +1240,15 @@ $([ -n "${ACC_LH_SCORE:-}" ] && echo "| Lighthouse A11y | ✅ ${ACC_LH_SCORE}/10
 | HTTPS Redirect | $([ "$SEC_HTTPS_REDIRECT" == "true" ] && echo "✅" || echo "❌") | 🔴 Crítico |
 | Cookies Secure flag | $([ "$SEC_COOKIE_SECURE" == "true" ] && echo "✅" || echo "⚠️ Falta") | 🟠 Alto |
 | Cookies HttpOnly flag | $([ "$SEC_COOKIE_HTTPONLY" == "true" ] && echo "✅" || echo "⚠️ Falta") | 🟠 Alto |
+| Expiración SSL | ${SEC_SSL_EXPIRY_NOTE:-No verificado} | $(if (( ${SEC_SSL_DAYS:--1} <= 0 )); then echo "🔴 Crítico"; elif (( SEC_SSL_DAYS <= 30 )); then echo "🟠 Alto"; elif (( SEC_SSL_DAYS <= 90 )); then echo "🟡 Medio"; else echo "🟢 OK"; fi) |
+$([ -n "${SEC_SSLCHECK_RESULT:-}" ] && echo "| ssl-checker | \`${SEC_SSLCHECK_RESULT}\` | — |")
 
-**💡 Recomendaciones:**
+**💡 Recomendaciones de infraestructura:**
+- $([ "$SEC_DOM_PRIVACY" != "true" ] && echo "🟡 MEDIO: Activar privacidad WHOIS en el registrador para proteger datos del titular" || echo "- Privacidad WHOIS activa ✓")
+- $([ "${SEC_DOM_DAYS_LEFT:-999}" -le 90 ] && [ "${SEC_DOM_DAYS_LEFT:-999}" -gt 0 ] && echo "🟠 ALTO: Renovar dominio — expira en ${SEC_DOM_DAYS_LEFT} días" || true)
+- $([ "${SEC_DOM_DAYS_LEFT:-999}" -le 0 ] && echo "🔴 CRÍTICO: El dominio ha expirado o está próximo a expirar" || true)
+
+**💡 Recomendaciones de seguridad HTTP:**
 - $([ "$SEC_HSTS" != "true" ] && echo "🔴 CRÍTICO: Implementar HSTS: \`Strict-Transport-Security: max-age=31536000; includeSubDomains\`" || echo "- HSTS configurado ✓")
 - $([ "$SEC_CSP" != "true" ] && echo "🔴 CRÍTICO: Configurar Content-Security-Policy estricta para prevenir XSS" || echo "- CSP configurado ✓")
 - $([ "$SEC_XCTO" != "true" ] && echo "🟠 ALTO: Añadir \`X-Content-Type-Options: nosniff\`" || echo "- X-Content-Type-Options ✓")
@@ -1062,6 +1294,7 @@ $([ -n "${ACC_LH_SCORE:-}" ] && echo "| Lighthouse A11y | ✅ ${ACC_LH_SCORE}/10
 | Scripts inline | $(( CT_INLINE_SCRIPTS > 5 )) && echo "⚠️ Muchos" || echo "✅ OK" | ${CT_INLINE_SCRIPTS} detectados |
 | Estilos inline | $(( CT_INLINE_STYLES > 10 )) && echo "⚠️ Muchos" || echo "✅ OK" | ${CT_INLINE_STYLES} detectados |
 | Links analizados | — | ${CT_BROKEN_LINKS} encontrados |
+$([ -n "$HTMLHINT_CMD" ] && echo "| htmlhint errores | $([ ${CT_HTMLHINT_ERRORS:-0} -eq 0 ] && echo '✅ 0' || echo "⚠️ ${CT_HTMLHINT_ERRORS}") | ${CT_HTMLHINT_WARNINGS:-0} warnings |")
 
 **💡 Recomendaciones:**
 - $([ "$CT_DOCTYPE" != "true" ] && echo "🔴 CRÍTICO: Añadir \`<!DOCTYPE html>\` al inicio del documento" || echo "- DOCTYPE correcto ✓")

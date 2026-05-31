@@ -32,11 +32,25 @@ curl -sSL https://raw.githubusercontent.com/homium-tech/audit/main/install.sh | 
 
 ### Dependencias opcionales (para análisis completo)
 
+> El script detecta automáticamente cada herramienta. Si no está instalada globalmente, intenta usarla via `npx`. Sin ellas el análisis es parcial pero funcional.
+>
+> Todas las herramientas operan sobre información pública del sitio auditado (URL, dominio, IP). Ninguna accede a datos privados del sistema o del usuario.
+
 ```bash
-npm install -g lighthouse   # Performance · Accesibilidad · Diseño
-cargo install htmlq         # Análisis HTML avanzado
-# o: brew install htmlq
+npm install -g lighthouse        # Performance · SEO · Accesibilidad · Diseño
+npm install -g @axe-core/cli     # Accesibilidad WCAG profunda
+npm install -g pa11y             # Accesibilidad WCAG complementaria
+npm install -g htmlhint          # Calidad y buenas prácticas HTML
+npm install -g ssl-checker       # Validación TLS y certificados
 ```
+
+| Herramienta | Dimensión | Sin ella |
+|-------------|-----------|----------|
+| `lighthouse` | Performance · SEO · Accesibilidad · Diseño | Análisis reducido |
+| `@axe-core/cli` | Accesibilidad | Sin reporte WCAG detallado |
+| `pa11y` | Accesibilidad | Sin reporte WCAG complementario |
+| `htmlhint` | Calidad técnica | Sin validación de errores HTML |
+| `ssl-checker` | Seguridad | Expiración SSL verificada igualmente via `openssl` |
 
 ---
 
