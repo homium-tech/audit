@@ -30,11 +30,34 @@
 curl -sSL https://raw.githubusercontent.com/homium-tech/audit/main/install.sh | bash
 ```
 
-### Dependencias opcionales (para análisis completo)
+El instalador detecta automáticamente el sistema operativo y configura todo.
 
-> El script detecta automáticamente cada herramienta. Si no está instalada globalmente, intenta usarla via `npx`. Sin ellas el análisis es parcial pero funcional.
->
-> Todas las herramientas operan sobre información pública del sitio auditado (URL, dominio, IP). Ninguna accede a datos privados del sistema o del usuario.
+---
+
+## 💻 Compatibilidad
+
+| Entorno | Soporte | Notas |
+|---------|:-------:|-------|
+| **macOS** (bash 3+) | ✅ Completo | Requiere bash 3.2+ (incluido por defecto) |
+| **Linux** | ✅ Completo | Ubuntu, Debian, Fedora, etc. |
+| **Windows — Git Bash** | ✅ Completo | Requiere [Git for Windows](https://git-scm.com/download/win) |
+| **Windows — WSL** | ✅ Completo | Igual que Linux |
+| **Windows — CMD/PowerShell** | ❌ | No soportado (requiere bash) |
+
+### Requisitos mínimos
+
+| Herramienta | macOS | Linux | Git Bash |
+|-------------|:-----:|:-----:|:--------:|
+| `bash` | ✅ incluido | ✅ incluido | ✅ incluido |
+| `curl` | ✅ incluido | ✅ incluido | ✅ incluido |
+| `openssl` | ✅ incluido | ✅ incluido | ✅ incluido |
+| `perl` | ✅ incluido | ✅ incluido | ✅ incluido |
+
+> Sin `dig` o `whois` el script usa APIs públicas como fallback automático. Sin `timeout` usa `perl` como alternativa. Todo funciona sin instalación adicional.
+
+### Dependencias opcionales (análisis completo)
+
+> Todas operan sobre información pública del sitio auditado. Ninguna accede a datos privados del sistema o del usuario. El script las detecta automáticamente — si no están globales, intenta `npx`.
 
 ```bash
 npm install -g lighthouse        # Performance · SEO · Accesibilidad · Diseño

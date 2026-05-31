@@ -5,7 +5,10 @@
 # Uso: curl -sSL https://raw.githubusercontent.com/homium-tech/audit/main/install.sh | bash
 # =============================================================================
 
-set -euo pipefail
+# ─── Detectar entorno ────────────────────────────────────────────────────────
+OS_TYPE="linux"
+[[ "$OSTYPE" == "darwin"* ]] && OS_TYPE="macos"
+[[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]] && OS_TYPE="windows"
 
 REPO="homium-tech/audit"
 INSTALL_DIR="${HOME}/.homium-audit"
@@ -14,12 +17,8 @@ BRANCH="main"
 BASE_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}"
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-BOLD='\033[1m'
-RESET='\033[0m'
+GREEN='\033[0;32m'; CYAN='\033[0;36m'
+YELLOW='\033[1;33m'; RED='\033[0;31m'; BOLD='\033[1m'; RESET='\033[0m'
 
 ok()   { echo -e "${GREEN}✓${RESET} $*"; }
 info() { echo -e "${CYAN}→${RESET} $*"; }
@@ -31,168 +30,213 @@ step() { echo -e "\n${BOLD}${CYAN}── $* ────────────
 echo ""
 echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════╗${RESET}"
 echo -e "${BOLD}${CYAN}║  homium-audit — Instalador               ║${RESET}"
-echo -e "${BOLD}${CYAN}║  github.com/${REPO}    ║${RESET}"
+echo -e "${BOLD}${CYAN}║  github.com/${REPO}      ║${RESET}"
 echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════╝${RESET}"
 echo ""
 
-# ─── OS Detection ────────────────────────────────────────────────────────────
-OS="unknown"
-[[ "$OSTYPE" == "linux-gnu"* ]] && OS="linux"
-[[ "$OSTYPE" == "darwin"*    ]] && OS="macos"
-info "Sistema operativo: ${BOLD}${OS}${RESET}"
+# ─── Info de entorno ─────────────────────────────────────────────────────────
+case "$OS_TYPE" in
+  macos)
+    info "Sistema: macOS"
+    info "Shell: ${SHELL:-bash}"
+    ;;
+  windows)
+    info "Sistema: Windows (Git Bash / MSYS2)"
+    echo ""
+    echo -e "  ${YELLOW}Requisitos en Windows:${RESET}"
+    echo -e "  • Git for Windows (incluye bash, curl, perl, openssl)"
+    echo -e "    https://git-scm.com/download/win"
+    echo -e "  • Node.js para herramientas opcionales (lighthouse, etc.)"
+    echo -e "    https://nodejs.org"
+    echo ""
+    ;;
+  linux)
+    info "Sistema: Linux"
+    ;;
+esac
 
-# ─── Check required tools ─────────────────────────────────────────────────────
-step "Verificando dependencias requeridas"
+# ─── Verificar dependencias requeridas ───────────────────────────────────────
+step "Verificando dependencias"
 MISSING_REQ=()
-for tool in curl openssl bash; do
-  if command -v "$tool" &>/dev/null; then
-    ok "$tool"
+
+for t in curl openssl bash perl; do
+  if command -v "$t" &>/dev/null; then
+    ok "$t"
   else
-    MISSING_REQ+=("$tool")
-    err "$tool — REQUERIDO"
+    MISSING_REQ+=("$t")
+    err "$t (requerido)"
   fi
 done
 
 if [[ ${#MISSING_REQ[@]} -gt 0 ]]; then
+  echo ""
   err "Faltan dependencias requeridas: ${MISSING_REQ[*]}"
-  err "Instálalas antes de continuar."
+  case "$OS_TYPE" in
+    macos)
+      echo -e "  Instala con: ${CYAN}brew install ${MISSING_REQ[*]}${RESET}"
+      ;;
+    windows)
+      echo -e "  Instala ${CYAN}Git for Windows${RESET}: https://git-scm.com/download/win"
+      ;;
+    linux)
+      echo -e "  Instala con: ${CYAN}sudo apt install ${MISSING_REQ[*]}${RESET}"
+      ;;
+  esac
   exit 1
 fi
 
-# ─── Check optional tools ─────────────────────────────────────────────────────
-step "Verificando herramientas opcionales"
-for tool in lighthouse htmlq jq node dig; do
-  if command -v "$tool" &>/dev/null; then
-    ok "$tool (disponible)"
+# ─── Verificar herramientas opcionales ───────────────────────────────────────
+step "Herramientas opcionales"
+
+for t in dig whois jq; do
+  if command -v "$t" &>/dev/null; then
+    ok "$t"
   else
-    warn "$tool (no encontrado — análisis parcial en algunas dimensiones)"
+    case "$t" in
+      dig)
+        case "$OS_TYPE" in
+          macos)   warn "dig — brew install bind" ;;
+          windows) warn "dig — no disponible en Git Bash (se usará DNS API)" ;;
+          linux)   warn "dig — sudo apt install dnsutils" ;;
+        esac ;;
+      whois)
+        case "$OS_TYPE" in
+          macos)   warn "whois — brew install whois" ;;
+          windows) warn "whois — no disponible en Git Bash (se usará RDAP API)" ;;
+          linux)   warn "whois — sudo apt install whois" ;;
+        esac ;;
+      jq)
+        case "$OS_TYPE" in
+          macos)   warn "jq — brew install jq" ;;
+          windows) warn "jq — https://jqlang.github.io/jq/download/" ;;
+          linux)   warn "jq — sudo apt install jq" ;;
+        esac ;;
+    esac
   fi
 done
 
-echo ""
-info "Para instalar Lighthouse (mejora análisis de performance, SEO y accesibilidad):"
-echo "    npm install -g lighthouse"
-echo ""
+# Node/npm para herramientas de análisis
+if command -v node &>/dev/null && command -v npm &>/dev/null; then
+  ok "node + npm (lighthouse, axe-core, pa11y, htmlhint disponibles)"
+else
+  warn "node/npm no encontrado — herramientas de análisis avanzado no disponibles"
+  case "$OS_TYPE" in
+    macos)   echo -e "    Instala: ${CYAN}brew install node${RESET} o https://nodejs.org" ;;
+    windows) echo -e "    Instala: ${CYAN}https://nodejs.org${RESET}" ;;
+    linux)   echo -e "    Instala: ${CYAN}sudo apt install nodejs npm${RESET}" ;;
+  esac
+fi
 
-# ─── Install ──────────────────────────────────────────────────────────────────
+# ─── Instalar ─────────────────────────────────────────────────────────────────
 step "Instalando homium-audit"
 
-# Create directories
 mkdir -p "$INSTALL_DIR"
-mkdir -p "$BIN_DIR"
 mkdir -p "${HOME}/audits"
 ok "Directorios creados"
 
-# Download main script
+# Descargar script principal
 info "Descargando homium-audit.sh..."
-if curl -sSL "${BASE_URL}/homium-audit.sh" -o "${INSTALL_DIR}/homium-audit.sh"; then
+if curl -sSL "${BASE_URL}/homium-audit.sh" -o "${INSTALL_DIR}/homium-audit.sh" 2>/dev/null; then
   chmod +x "${INSTALL_DIR}/homium-audit.sh"
-  ok "Script principal instalado en ${INSTALL_DIR}/homium-audit.sh"
+  ok "Script instalado en ${INSTALL_DIR}/homium-audit.sh"
+elif [[ -f "$(pwd)/homium-audit.sh" ]]; then
+  cp "$(pwd)/homium-audit.sh" "${INSTALL_DIR}/homium-audit.sh"
+  chmod +x "${INSTALL_DIR}/homium-audit.sh"
+  ok "Script copiado desde directorio actual"
 else
-  # Fallback: try to copy from current directory
-  if [[ -f "$(pwd)/homium-audit.sh" ]]; then
-    cp "$(pwd)/homium-audit.sh" "${INSTALL_DIR}/homium-audit.sh"
-    chmod +x "${INSTALL_DIR}/homium-audit.sh"
-    ok "Script copiado desde directorio actual"
-  else
-    err "No se pudo descargar homium-audit.sh"
-    err "Verifica tu conexión a internet o ejecuta desde el directorio del repositorio."
-    exit 1
-  fi
+  err "No se pudo obtener homium-audit.sh"
+  err "Descarga manualmente desde: https://github.com/${REPO}"
+  exit 1
 fi
 
-# Download Claude Code command
-COMMANDS_DIR="${INSTALL_DIR}/commands"
-mkdir -p "$COMMANDS_DIR"
-info "Descargando comando Claude Code..."
+# Descargar comando Claude Code
+mkdir -p "${INSTALL_DIR}/commands"
 if curl -sSL "${BASE_URL}/commands/homium-audit.md" \
-  -o "${COMMANDS_DIR}/homium-audit.md" 2>/dev/null; then
-  ok "Comando Claude Code instalado"
-else
-  warn "No se pudo descargar el comando Claude Code (no crítico)"
+  -o "${INSTALL_DIR}/commands/homium-audit.md" 2>/dev/null; then
+  ok "Comando Claude Code descargado"
 fi
 
-# Create symlink in ~/.local/bin
-info "Creando symlink en ${BIN_DIR}/homium-audit..."
-ln -sf "${INSTALL_DIR}/homium-audit.sh" "${BIN_DIR}/homium-audit"
-ok "Symlink creado: ${BIN_DIR}/homium-audit"
+# ─── Configurar PATH según OS ─────────────────────────────────────────────────
+step "Configurando acceso al comando"
 
-# ─── PATH setup ───────────────────────────────────────────────────────────────
-step "Configurando PATH"
+case "$OS_TYPE" in
+  windows)
+    # En Git Bash el PATH más confiable es ~/bin
+    BIN_DIR="${HOME}/bin"
+    mkdir -p "$BIN_DIR"
+    cp "${INSTALL_DIR}/homium-audit.sh" "${BIN_DIR}/homium-audit"
+    chmod +x "${BIN_DIR}/homium-audit"
+    ok "Copiado en ${BIN_DIR}/homium-audit"
 
-add_to_path() {
-  local file="$1"
-  local export_line='export PATH="$HOME/.local/bin:$PATH"'
-  if [[ -f "$file" ]] && ! grep -q ".local/bin" "$file"; then
-    echo "" >> "$file"
-    echo "# homium-audit" >> "$file"
-    echo "$export_line" >> "$file"
-    ok "PATH añadido a $file"
-  fi
-}
+    # Añadir ~/bin al PATH en .bashrc si no está
+    if ! grep -q 'HOME/bin' "${HOME}/.bashrc" 2>/dev/null; then
+      echo '' >> "${HOME}/.bashrc"
+      echo '# homium-audit' >> "${HOME}/.bashrc"
+      echo 'export PATH="$HOME/bin:$PATH"' >> "${HOME}/.bashrc"
+      ok "PATH actualizado en ~/.bashrc"
+    fi
+    ;;
 
-if ! echo "$PATH" | grep -q ".local/bin"; then
-  add_to_path "${HOME}/.bashrc"
-  add_to_path "${HOME}/.zshrc"
-  add_to_path "${HOME}/.profile"
-  warn "PATH actualizado. Reinicia tu terminal o ejecuta: source ~/.bashrc"
-else
-  ok "PATH ya contiene ~/.local/bin"
-fi
+  macos|linux)
+    mkdir -p "$BIN_DIR"
+    ln -sf "${INSTALL_DIR}/homium-audit.sh" "${BIN_DIR}/homium-audit"
+    ok "Symlink creado: ${BIN_DIR}/homium-audit"
 
-# ─── Claude Code integration ──────────────────────────────────────────────────
+    # Añadir ~/.local/bin al PATH si no está
+    if ! echo "$PATH" | grep -q ".local/bin"; then
+      for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+        if [[ -f "$rc" ]] && ! grep -q ".local/bin" "$rc"; then
+          echo '' >> "$rc"
+          echo '# homium-audit' >> "$rc"
+          echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$rc"
+          ok "PATH añadido a $rc"
+        fi
+      done
+    else
+      ok "PATH ya contiene ~/.local/bin"
+    fi
+    ;;
+esac
+
+# ─── Integración con Claude Code ─────────────────────────────────────────────
 step "Integrando con Claude Code"
 
 CLAUDE_COMMANDS_DIR="${HOME}/.claude/commands"
 if [[ -d "${HOME}/.claude" ]] || [[ -d "${HOME}/.config/claude" ]]; then
   mkdir -p "$CLAUDE_COMMANDS_DIR"
-  if [[ -f "${COMMANDS_DIR}/homium-audit.md" ]]; then
-    cp "${COMMANDS_DIR}/homium-audit.md" "${CLAUDE_COMMANDS_DIR}/homium-audit.md"
-    ok "Comando /homium-audit instalado en Claude Code"
-  fi
+  cp "${INSTALL_DIR}/commands/homium-audit.md" "${CLAUDE_COMMANDS_DIR}/homium-audit.md" 2>/dev/null && \
+    ok "Comando /homium-audit instalado en Claude Code" || \
+    warn "No se pudo instalar el comando Claude Code"
 else
-  warn "Claude Code no detectado — el comando /homium-audit se instalará manualmente."
-  echo ""
-  info "Para instalar el comando en Claude Code manualmente:"
+  warn "Claude Code no detectado — instala el comando manualmente:"
   echo "    mkdir -p ~/.claude/commands"
-  echo "    cp ${COMMANDS_DIR}/homium-audit.md ~/.claude/commands/"
+  echo "    cp ${INSTALL_DIR}/commands/homium-audit.md ~/.claude/commands/"
 fi
 
-# ─── Create audit directory ───────────────────────────────────────────────────
-mkdir -p "${HOME}/audits"
-ok "Directorio de reportes: ${HOME}/audits/"
-
-# ─── Verify installation ──────────────────────────────────────────────────────
-step "Verificando instalación"
-if [[ -x "${INSTALL_DIR}/homium-audit.sh" ]]; then
-  ok "Instalación completada exitosamente"
-else
-  err "Algo salió mal durante la instalación"
-  exit 1
-fi
-
-# ─── Done ────────────────────────────────────────────────────────────────────
+# ─── Listo ───────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}${GREEN}╔═══════════════════════════════════════════════════╗${RESET}"
-echo -e "${BOLD}${GREEN}║  ✓ homium-audit instalado correctamente!          ║${RESET}"
+echo -e "${BOLD}${GREEN}║  ✓ homium-audit instalado correctamente           ║${RESET}"
 echo -e "${BOLD}${GREEN}╚═══════════════════════════════════════════════════╝${RESET}"
 echo ""
-echo -e "  ${BOLD}Uso:${RESET}"
+echo -e "  ${BOLD}Uso en terminal:${RESET}"
 echo -e "    ${CYAN}homium-audit https://ejemplo.com${RESET}"
 echo ""
-echo -e "  ${BOLD}En Claude Code:${RESET}"
+echo -e "  ${BOLD}Uso en Claude Code:${RESET}"
 echo -e "    ${CYAN}/homium-audit https://ejemplo.com${RESET}"
 echo ""
-echo -e "  ${BOLD}Reportes guardados en:${RESET}"
-echo -e "    ${CYAN}~/audits/${RESET}"
-echo ""
-echo -e "  ${BOLD}Más info:${RESET}"
-echo -e "    ${CYAN}https://github.com/${REPO}${RESET}"
+echo -e "  ${BOLD}Reportes en:${RESET} ${CYAN}~/audits/${RESET}"
 echo ""
 
-# Reload shell hint
-if ! command -v homium-audit &>/dev/null 2>&1; then
-  echo -e "  ${YELLOW}⚠ Ejecuta lo siguiente para usar homium-audit sin ruta completa:${RESET}"
-  echo -e "    ${CYAN}source ~/.bashrc  # o: source ~/.zshrc${RESET}"
-  echo ""
-fi
+# Aviso de recarga según OS
+case "$OS_TYPE" in
+  windows)
+    echo -e "  ${YELLOW}Reinicia Git Bash para que el comando esté disponible.${RESET}"
+    ;;
+  macos|linux)
+    if ! command -v homium-audit &>/dev/null 2>&1; then
+      echo -e "  ${YELLOW}Ejecuta: source ~/.bashrc  (o abre una nueva terminal)${RESET}"
+    fi
+    ;;
+esac
+echo ""
