@@ -11,6 +11,7 @@ OS_TYPE="linux"
 [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]] && OS_TYPE="windows"
 
 REPO="homium-tech/audit"
+VERSION="1.3.3"
 INSTALL_DIR="${HOME}/.homium-audit"
 BIN_DIR="${HOME}/.local/bin"
 BRANCH="main"
@@ -29,7 +30,7 @@ step() { echo -e "\n${BOLD}${CYAN}── $* ────────────
 # ─── Header ──────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════╗${RESET}"
-echo -e "${BOLD}${CYAN}║  homium-audit — Instalador               ║${RESET}"
+echo -e "${BOLD}${CYAN}║  homium-audit v${VERSION} — Instalador       ║${RESET}"
 echo -e "${BOLD}${CYAN}║  github.com/${REPO}      ║${RESET}"
 echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════╝${RESET}"
 echo ""
@@ -260,7 +261,7 @@ fi
 # ─── Listo ───────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}${GREEN}╔═══════════════════════════════════════════════════╗${RESET}"
-echo -e "${BOLD}${GREEN}║  ✓ homium-audit instalado correctamente           ║${RESET}"
+echo -e "${BOLD}${GREEN}║  ✓ homium-audit v${VERSION} instalado correctamente  ║${RESET}"
 echo -e "${BOLD}${GREEN}╚═══════════════════════════════════════════════════╝${RESET}"
 echo ""
 echo -e "  ${BOLD}Uso en terminal:${RESET}"
