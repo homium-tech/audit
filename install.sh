@@ -55,103 +55,120 @@ case "$OS_TYPE" in
     ;;
 esac
 
-# ─── Verificar dependencias requeridas ───────────────────────────────────────
-step "Verificando dependencias"
-MISSING_REQ=()
+# ─── Helpers de instalación automática ───────────────────────────────────────
 
-for t in curl openssl bash perl; do
-  if command -v "$t" &>/dev/null; then
-    ok "$t"
-  else
-    MISSING_REQ+=("$t")
-    err "$t (requerido)"
-  fi
-done
+# Detectar gestor de paquetes Linux
+LINUX_PKG=""
+if [[ "$OS_TYPE" == "linux" ]]; then
+  command -v apt-get &>/dev/null && LINUX_PKG="apt"
+  command -v dnf     &>/dev/null && LINUX_PKG="dnf"
+  command -v yum     &>/dev/null && LINUX_PKG="yum"
+  command -v pacman  &>/dev/null && LINUX_PKG="pacman"
+fi
 
-if [[ ${#MISSING_REQ[@]} -gt 0 ]]; then
-  echo ""
-  err "Faltan dependencias requeridas: ${MISSING_REQ[*]}"
+# Instalar paquete según plataforma
+_install_pkg() {
+  local name="$1" brew_pkg="${2:-$1}" apt_pkg="${3:-$1}" dnf_pkg="${4:-$1}"
+  info "Instalando ${name}..."
   case "$OS_TYPE" in
     macos)
-      echo -e "  Instala con: ${CYAN}brew install ${MISSING_REQ[*]}${RESET}"
-      ;;
-    windows)
-      echo -e "  Instala ${CYAN}Git for Windows${RESET}: https://git-scm.com/download/win"
-      ;;
+      brew install "$brew_pkg" --quiet 2>/dev/null && ok "$name" && return 0 ;;
     linux)
-      echo -e "  Instala con: ${CYAN}sudo apt install ${MISSING_REQ[*]}${RESET}"
-      ;;
+      case "$LINUX_PKG" in
+        apt)    sudo apt-get install -y "$apt_pkg" -qq 2>/dev/null && ok "$name" && return 0 ;;
+        dnf|yum) sudo "$LINUX_PKG" install -y "$dnf_pkg" 2>/dev/null && ok "$name" && return 0 ;;
+        pacman) sudo pacman -S --noconfirm "$apt_pkg" 2>/dev/null  && ok "$name" && return 0 ;;
+      esac ;;
   esac
-  exit 1
+  warn "$name — no se pudo instalar automáticamente"
+  return 1
+}
+
+# ─── Homebrew (macOS) ─────────────────────────────────────────────────────────
+if [[ "$OS_TYPE" == "macos" ]] && ! command -v brew &>/dev/null; then
+  step "Instalando Homebrew"
+  info "Homebrew es necesario para instalar las dependencias en macOS..."
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  # Añadir brew al PATH de la sesión actual
+  [[ -f /opt/homebrew/bin/brew ]] && eval "$(/opt/homebrew/bin/brew shellenv)"
+  [[ -f /usr/local/bin/brew    ]] && eval "$(/usr/local/bin/brew shellenv)"
+  command -v brew &>/dev/null && ok "Homebrew instalado" || { err "No se pudo instalar Homebrew"; exit 1; }
 fi
 
-# ─── Verificar herramientas opcionales ───────────────────────────────────────
-step "Herramientas opcionales"
+# ─── Dependencias requeridas ──────────────────────────────────────────────────
+step "Verificando dependencias"
 
-for t in dig whois jq; do
+for t in curl openssl perl; do
   if command -v "$t" &>/dev/null; then
     ok "$t"
   else
-    case "$t" in
-      dig)
-        case "$OS_TYPE" in
-          macos)   warn "dig — brew install bind" ;;
-          windows) warn "dig — no disponible en Git Bash (se usará DNS API)" ;;
-          linux)   warn "dig — sudo apt install dnsutils" ;;
-        esac ;;
-      whois)
-        case "$OS_TYPE" in
-          macos)   warn "whois — brew install whois" ;;
-          windows) warn "whois — no disponible en Git Bash (se usará RDAP API)" ;;
-          linux)   warn "whois — sudo apt install whois" ;;
-        esac ;;
-      jq)
-        case "$OS_TYPE" in
-          macos)   warn "jq — brew install jq" ;;
-          windows) warn "jq — https://jqlang.github.io/jq/download/" ;;
-          linux)   warn "jq — sudo apt install jq" ;;
-        esac ;;
-    esac
+    _install_pkg "$t" || { err "$t es requerido y no se pudo instalar"; exit 1; }
   fi
 done
 
-# Node/npm para herramientas de análisis
-NPM_TOOLS_AVAILABLE=false
+# ─── Herramientas opcionales ──────────────────────────────────────────────────
+step "Instalando herramientas"
+
+# jq
+if command -v jq &>/dev/null; then
+  ok "jq"
+else
+  _install_pkg "jq" "jq" "jq" "jq" || warn "jq no disponible — algunas métricas de Lighthouse no estarán disponibles"
+fi
+
+# dig
+if command -v dig &>/dev/null; then
+  ok "dig"
+elif [[ "$OS_TYPE" == "windows" ]]; then
+  info "dig → se usará DNS API como fallback"
+else
+  _install_pkg "dig" "bind" "dnsutils" "bind-utils" || info "dig no disponible — se usará DNS API"
+fi
+
+# whois
+if command -v whois &>/dev/null; then
+  ok "whois"
+elif [[ "$OS_TYPE" == "windows" ]]; then
+  info "whois → se usará RDAP API como fallback"
+else
+  _install_pkg "whois" "whois" "whois" "whois" || info "whois no disponible — se usará RDAP API"
+fi
+
+# Node.js
 if command -v node &>/dev/null && command -v npm &>/dev/null; then
   ok "node $(node --version) + npm $(npm --version)"
-  NPM_TOOLS_AVAILABLE=true
+elif [[ "$OS_TYPE" == "windows" ]]; then
+  warn "node/npm no encontrado — instala Node.js desde https://nodejs.org"
 else
-  warn "node/npm no encontrado — Lighthouse, screenshots y análisis WCAG no disponibles"
-  case "$OS_TYPE" in
-    macos)   echo -e "    Instala: ${CYAN}brew install node${RESET} o https://nodejs.org" ;;
-    windows) echo -e "    Instala: ${CYAN}https://nodejs.org${RESET}" ;;
-    linux)   echo -e "    Instala: ${CYAN}sudo apt install nodejs npm${RESET}" ;;
-  esac
+  _install_pkg "node" "node" "nodejs npm" "nodejs npm" || warn "node/npm no disponible — Lighthouse no estará disponible"
 fi
 
-# ─── Verificar herramientas npm ───────────────────────────────────────────────
-if [[ "$NPM_TOOLS_AVAILABLE" == true ]]; then
-  step "Herramientas de análisis (npm)"
-
-  if command -v npx &>/dev/null; then
-    ok "npx disponible — lighthouse, axe-core, pa11y y htmlhint se cargan automáticamente al auditar"
-    for t in lighthouse axe pa11y htmlhint; do
-      command -v "$t" &>/dev/null && ok "$t (instalado globalmente)" || info "$t → se ejecutará vía npx bajo demanda"
-    done
-  else
-    warn "npx no encontrado — las herramientas de análisis avanzado no estarán disponibles"
-  fi
+# npx (confirmación)
+if command -v npx &>/dev/null; then
+  ok "npx — lighthouse, axe-core, pa11y y htmlhint se ejecutarán bajo demanda"
 fi
 
-# webanalyze — detección de stack tecnológico (Wappalyzer fingerprints)
+# Go + webanalyze
 if command -v webanalyze &>/dev/null; then
-  ok "webanalyze (stack tecnológico extendido disponible)"
+  ok "webanalyze"
+elif [[ "$OS_TYPE" == "windows" ]]; then
+  if command -v go &>/dev/null; then
+    info "Instalando webanalyze..."
+    go install github.com/rverton/webanalyze/cmd/webanalyze@latest 2>/dev/null && ok "webanalyze" || warn "webanalyze — no se pudo instalar"
+  else
+    warn "webanalyze — instala Go desde https://go.dev/dl para habilitar detección de stack tecnológico"
+  fi
 else
-  case "$OS_TYPE" in
-    macos)   warn "webanalyze — go install github.com/rverton/webanalyze/cmd/webanalyze@latest  (o: brew install go)" ;;
-    linux)   warn "webanalyze — go install github.com/rverton/webanalyze/cmd/webanalyze@latest" ;;
-    windows) warn "webanalyze — no disponible en Git Bash (se usará fingerprinting básico)" ;;
-  esac
+  if ! command -v go &>/dev/null; then
+    _install_pkg "go" "go" "golang" "golang" || true
+    # Añadir GOPATH al PATH de la sesión actual
+    export PATH="$PATH:$(go env GOPATH 2>/dev/null)/bin"
+  fi
+  if command -v go &>/dev/null; then
+    info "Instalando webanalyze..."
+    go install github.com/rverton/webanalyze/cmd/webanalyze@latest 2>/dev/null \
+      && ok "webanalyze" || warn "webanalyze — no se pudo instalar"
+  fi
 fi
 
 # ─── Instalar ─────────────────────────────────────────────────────────────────
