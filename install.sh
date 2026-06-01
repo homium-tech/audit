@@ -11,7 +11,7 @@ OS_TYPE="linux"
 [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]] && OS_TYPE="windows"
 
 REPO="homium-tech/audit"
-VERSION="1.3.3"
+VERSION="1.3.4"
 INSTALL_DIR="${HOME}/.homium-audit"
 BIN_DIR="${HOME}/.local/bin"
 BRANCH="main"
@@ -147,6 +147,24 @@ fi
 # npx (confirmación)
 if command -v npx &>/dev/null; then
   ok "npx — lighthouse, axe-core, pa11y y htmlhint se ejecutarán bajo demanda"
+fi
+
+# Chrome / Chromium (requerido por Lighthouse)
+_chrome_found=false
+command -v google-chrome        &>/dev/null && _chrome_found=true
+command -v google-chrome-stable &>/dev/null && _chrome_found=true
+command -v chromium             &>/dev/null && _chrome_found=true
+command -v chromium-browser     &>/dev/null && _chrome_found=true
+[[ -f "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]] && _chrome_found=true
+
+if [[ "$_chrome_found" == true ]]; then
+  ok "Chrome/Chromium detectado — Lighthouse podrá ejecutarse"
+elif [[ "$OS_TYPE" == "windows" ]]; then
+  warn "Chrome no detectado — instala Google Chrome para habilitar Lighthouse"
+else
+  info "Chrome/Chromium no detectado — instalando Chromium para Lighthouse..."
+  _install_pkg "chromium" "chromium" "chromium-browser" "chromium" && _chrome_found=true \
+    || warn "Chromium no se pudo instalar — instala Google Chrome manualmente para habilitar Lighthouse"
 fi
 
 # Go + webanalyze

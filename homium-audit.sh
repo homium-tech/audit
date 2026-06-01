@@ -55,7 +55,7 @@ HTMLHINT_CMD=$(resolve_cmd "htmlhint" "htmlhint")
 SSLCHECK_CMD=$(resolve_cmd "ssl-checker" "ssl-checker")
 
 # ─── Usage ───────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="1.3.3"
+SCRIPT_VERSION="1.3.4"
 
 usage() {
   echo -e "${BOLD}homium-audit${RESET} v${SCRIPT_VERSION} — Auditoría profesional de sitios web"
@@ -270,26 +270,66 @@ get_score() {
   eval "echo "\${SCORE_S_${key}:-0}""
 }
 
+# ─── Detectar Chrome/Chromium para Lighthouse ────────────────────────────────
+_detect_chrome() {
+  # macOS — Chrome instalado
+  [[ -f "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]] && \
+    echo "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" && return
+  # macOS — Chromium via Homebrew
+  [[ -f "/opt/homebrew/bin/chromium" ]] && echo "/opt/homebrew/bin/chromium" && return
+  [[ -f "/usr/local/bin/chromium"    ]] && echo "/usr/local/bin/chromium"    && return
+  # Linux
+  command -v google-chrome        &>/dev/null && echo "$(command -v google-chrome)"        && return
+  command -v google-chrome-stable &>/dev/null && echo "$(command -v google-chrome-stable)" && return
+  command -v chromium-browser     &>/dev/null && echo "$(command -v chromium-browser)"     && return
+  command -v chromium             &>/dev/null && echo "$(command -v chromium)"             && return
+  # Windows — Git Bash (rutas en formato Unix → convertidas a C:/... para Node.js)
+  local _win_chrome=""
+  if [[ -f "/c/Program Files/Google/Chrome/Application/chrome.exe" ]]; then
+    _win_chrome="C:/Program Files/Google/Chrome/Application/chrome.exe"
+  elif [[ -f "/c/Program Files (x86)/Google/Chrome/Application/chrome.exe" ]]; then
+    _win_chrome="C:/Program Files (x86)/Google/Chrome/Application/chrome.exe"
+  elif [[ -f "${HOME}/AppData/Local/Google/Chrome/Application/chrome.exe" ]]; then
+    # HOME en Git Bash es /c/Users/username → convertir a C:/Users/username para Node.js
+    _win_chrome=$(echo "${HOME}/AppData/Local/Google/Chrome/Application/chrome.exe" \
+      | perl -pe 's|^/([a-z])/|uc($1).":/"|e' 2>/dev/null || \
+        echo "${HOME}/AppData/Local/Google/Chrome/Application/chrome.exe")
+  fi
+  [[ -n "$_win_chrome" ]] && echo "$_win_chrome" && return
+  echo ""
+}
+
 # ─── Lighthouse — mobile + desktop ───────────────────────────────────────────
+_run_lh() {
+  local out="$1" extra_flags="$2" chrome_path="$3"
+  if [[ -n "$chrome_path" ]]; then
+    $LH_CMD "$URL" --output=json --output-path="$out" \
+      --only-categories=performance,seo,accessibility,best-practices \
+      --chrome-flags="--headless --no-sandbox --disable-gpu" \
+      --chrome-path="$chrome_path" \
+      $extra_flags --quiet 2>/dev/null
+  else
+    $LH_CMD "$URL" --output=json --output-path="$out" \
+      --only-categories=performance,seo,accessibility,best-practices \
+      --chrome-flags="--headless --no-sandbox --disable-gpu" \
+      $extra_flags --quiet 2>/dev/null
+  fi
+}
+
 run_lighthouse() {
   [[ -z "$LH_CMD" ]] && return 1
-  local cats="--only-categories=performance,seo,accessibility,best-practices"
-  local flags="--chrome-flags=--headless --no-sandbox --disable-gpu"
+  local chrome_path
+  chrome_path=$(_detect_chrome)
 
   if [[ "$LH_DONE_MOBILE" != true ]]; then
     info "Ejecutando Lighthouse Mobile..."
-    $LH_CMD "$URL" --output=json --output-path="$LH_JSON_MOBILE" \
-      $cats --chrome-flags="--headless --no-sandbox --disable-gpu" \
-      --quiet 2>/dev/null && LH_DONE_MOBILE=true || true
+    _run_lh "$LH_JSON_MOBILE" "" "$chrome_path" && LH_DONE_MOBILE=true || true
     [[ "$LH_DONE_MOBILE" == true ]] && ok "Lighthouse Mobile completado" || warn "Lighthouse Mobile no pudo completar"
   fi
 
   if [[ "$LH_DONE_DESKTOP" != true ]]; then
     info "Ejecutando Lighthouse Desktop..."
-    $LH_CMD "$URL" --output=json --output-path="$LH_JSON_DESKTOP" \
-      $cats --preset=desktop \
-      --chrome-flags="--headless --no-sandbox --disable-gpu" \
-      --quiet 2>/dev/null && LH_DONE_DESKTOP=true || true
+    _run_lh "$LH_JSON_DESKTOP" "--preset=desktop" "$chrome_path" && LH_DONE_DESKTOP=true || true
     [[ "$LH_DONE_DESKTOP" == true ]] && ok "Lighthouse Desktop completado" || warn "Lighthouse Desktop no pudo completar"
   fi
 }

@@ -3,7 +3,7 @@
 > Herramienta de auditoría web profesional para Claude Code.
 > Analiza sitios web desde **8 dimensiones**, genera reportes Markdown listos para stakeholders y detecta el stack tecnológico completo.
 
-[![Version](https://img.shields.io/badge/versión-1.3.3-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.3.3)
+[![Version](https://img.shields.io/badge/versión-1.3.4-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.3.4)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Compatible-blueviolet)](https://claude.ai)
 [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-green)](https://www.gnu.org/software/bash/)
@@ -182,6 +182,12 @@ homium-audit/
 ---
 
 ## 📋 Changelog
+
+### v1.3.4 — Detección automática de Chrome para Lighthouse (Windows + macOS + Linux)
+- **Rutas Windows soportadas** — Detecta Chrome en `C:/Program Files/Google/Chrome/...`, `Program Files (x86)` y AppData del usuario; convierte rutas Git Bash (`/c/...`) al formato `C:/...` que espera Node.js
+- **macOS y Linux** — Detecta Chrome en `/Applications/Google Chrome.app`, Homebrew Chromium y rutas estándar de Linux; pasa `--chrome-path` explícitamente a Lighthouse
+- **Installer instala Chromium** — `install.sh` verifica si hay algún navegador compatible; si no, instala `chromium` automáticamente (brew / apt / dnf)
+- **Resuelve N/A en Lighthouse** — Core Web Vitals y screenshots aparecen correctamente en equipos sin Chrome en PATH
 
 ### v1.3.3 — Fix Lighthouse vía npx
 - **Lighthouse siempre corre** — `resolve_cmd` dejó de pre-verificar la disponibilidad del paquete npx (que descargaba el binario y podía fallar/timeout); ahora simplemente comprueba si `npx` existe y usa `npx --yes <pkg>` en tiempo de ejecución
