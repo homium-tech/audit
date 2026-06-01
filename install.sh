@@ -129,31 +129,18 @@ else
   esac
 fi
 
-# ─── Instalar herramientas npm ────────────────────────────────────────────────
+# ─── Verificar herramientas npm ───────────────────────────────────────────────
 if [[ "$NPM_TOOLS_AVAILABLE" == true ]]; then
-  step "Instalando herramientas de análisis (npm)"
+  step "Herramientas de análisis (npm)"
 
-  NPM_GLOBAL_PREFIX=$(npm prefix -g 2>/dev/null || echo "")
-  NPM_GLOBAL_BIN="${NPM_GLOBAL_PREFIX}/bin"
-
-  _install_npm() {
-    local pkg="$1" cmd="${2:-$1}"
-    if command -v "$cmd" &>/dev/null || [[ -f "${NPM_GLOBAL_BIN}/${cmd}" ]]; then
-      ok "${pkg} (ya instalado)"
-    else
-      info "Instalando ${pkg}..."
-      if npm install -g "$pkg" --quiet 2>/dev/null; then
-        ok "${pkg}"
-      else
-        warn "${pkg} — no se pudo instalar (puedes instalarlo manualmente: npm i -g ${pkg})"
-      fi
-    fi
-  }
-
-  _install_npm "lighthouse"          "lighthouse"
-  _install_npm "@axe-core/cli"       "axe"
-  _install_npm "pa11y"               "pa11y"
-  _install_npm "htmlhint"            "htmlhint"
+  if command -v npx &>/dev/null; then
+    ok "npx disponible — lighthouse, axe-core, pa11y y htmlhint se cargan automáticamente al auditar"
+    for t in lighthouse axe pa11y htmlhint; do
+      command -v "$t" &>/dev/null && ok "$t (instalado globalmente)" || info "$t → se ejecutará vía npx bajo demanda"
+    done
+  else
+    warn "npx no encontrado — las herramientas de análisis avanzado no estarán disponibles"
+  fi
 fi
 
 # webanalyze — detección de stack tecnológico (Wappalyzer fingerprints)
