@@ -530,12 +530,12 @@ analyze_calidad_tecnica() {
   CT_DOCTYPE=false; CT_LANG=false; CT_CHARSET=false; CT_VIEWPORT=false
   CT_TITLE=false;   CT_CANONICAL=false
 
-  echo "$html" | grep -qi "<!DOCTYPE html>"     && CT_DOCTYPE=true   || true
-  echo "$html" | grep -qi '<html[^>]*lang='     && CT_LANG=true      || true
-  echo "$html" | grep -qi 'charset='            && CT_CHARSET=true   || true
-  echo "$html" | grep -qi 'name="viewport"'     && CT_VIEWPORT=true  || true
-  echo "$html" | grep -qi '<title>'             && CT_TITLE=true     || true
-  echo "$html" | grep -qi 'rel="canonical"'     && CT_CANONICAL=true || true
+  grep -qi "<!DOCTYPE html>" <<< "$html"     && CT_DOCTYPE=true   || true
+  grep -qi '<html[^>]*lang=' <<< \"$html\"     && CT_LANG=true      || true
+  grep -qi 'charset=' <<< \"$html\"            && CT_CHARSET=true   || true
+  grep -qi 'name="viewport"' <<< \"$html\"     && CT_VIEWPORT=true  || true
+  grep -qi '<title>' <<< \"$html\"             && CT_TITLE=true     || true
+  grep -qi 'rel="canonical"' <<< \"$html\"     && CT_CANONICAL=true || true
 
   [[ "$CT_DOCTYPE"   == false ]] && score=$((score-15)) || true
   [[ "$CT_LANG"      == false ]] && score=$((score-10)) || true
@@ -555,11 +555,11 @@ analyze_calidad_tecnica() {
   (( CT_DEPRECATED > 0 )) && score=$((score-10)) || true
 
   CT_MIXED_CONTENT=false
-  echo "$html" | grep -qiE 'src="http://|href="http://' && CT_MIXED_CONTENT=true || true
+  grep -qiE 'src="http://|href="http://' <<< \"$html\" && CT_MIXED_CONTENT=true || true
   [[ "$CT_MIXED_CONTENT" == true ]] && score=$((score-15)) || true
 
-  CT_PWA_MANIFEST=false; echo "$html" | grep -qi 'rel="manifest"' && CT_PWA_MANIFEST=true || true
-  CT_SERVICE_WORKER=false; echo "$html" | grep -qi 'serviceWorker\|sw\.js' && CT_SERVICE_WORKER=true || true
+  CT_PWA_MANIFEST=false; grep -qi 'rel="manifest"' <<< "$html" && CT_PWA_MANIFEST=true || true
+  CT_SERVICE_WORKER=false; grep -qi 'serviceWorker\|sw\.js' <<< "$html" && CT_SERVICE_WORKER=true || true
 
   CT_BROKEN_LINKS="N/A"
   if [[ -n "$HTMLHINT_CMD" ]]; then
@@ -621,13 +621,13 @@ analyze_seo() {
   (( SEO_H1_COUNT == 0 )) && score=$((score-15)) || true
   (( SEO_H1_COUNT >  1 )) && score=$((score-10)) || true
 
-  SEO_OG=false;     echo "$html" | grep -qi 'property="og:'         && SEO_OG=true     || true
-  SEO_SCHEMA=false; echo "$html" | grep -qi 'application/ld+json'   && SEO_SCHEMA=true || true
+  SEO_OG=false;     grep -qi 'property="og:' <<< "$html"         && SEO_OG=true     || true
+  SEO_SCHEMA=false; grep -qi 'application/ld+json' <<< "$html"   && SEO_SCHEMA=true || true
   [[ "$SEO_OG"     == false ]] && score=$((score-10)) || true
   [[ "$SEO_SCHEMA" == false ]] && score=$((score-5))  || true
 
-  SEO_TWITTER_CARD=false; echo "$html" | grep -qi 'name="twitter:card"' && SEO_TWITTER_CARD=true || true
-  SEO_HREFLANG=false;     echo "$html" | grep -qi 'hreflang='            && SEO_HREFLANG=true    || true
+  SEO_TWITTER_CARD=false; grep -qi 'name="twitter:card"' <<< "$html" && SEO_TWITTER_CARD=true || true
+  SEO_HREFLANG=false;     grep -qi 'hreflang=' <<< "$html"            && SEO_HREFLANG=true    || true
   local meta_robots
   meta_robots=$(echo "$html" | grep -i 'name="robots"' | sed 's/.*content="\([^"]*\)".*/\1/' | head -1 | xargs 2>/dev/null) || meta_robots=""
   SEO_META_ROBOTS="${meta_robots:-No definido}"
@@ -681,8 +681,8 @@ analyze_accesibilidad() {
     score=$((score - pen))
   fi
 
-  ACC_ARIA=false;  echo "$html" | grep -qi 'aria-label\|aria-labelledby\|role=' && ACC_ARIA=true  || true
-  ACC_SKIP=false;  echo "$html" | grep -qi 'skip\|saltar'                        && ACC_SKIP=true  || true
+  ACC_ARIA=false;  grep -qi 'aria-label\|aria-labelledby\|role=' <<< "$html" && ACC_ARIA=true  || true
+  ACC_SKIP=false;  grep -qi 'skip\|saltar' <<< "$html"                        && ACC_SKIP=true  || true
   [[ "$ACC_ARIA" == false ]] && score=$((score-15)) || true
   [[ "$ACC_SKIP" == false ]] && score=$((score-10)) || true
 
@@ -692,7 +692,7 @@ analyze_accesibilidad() {
   ACC_FORMS=${forms_count:-0}; ACC_LABELS=${labels_count:-0}
   (( ACC_FORMS > 0 && ACC_LABELS < ACC_FORMS )) && score=$((score-15)) || true
 
-  echo "$html" | grep -qi '<html[^>]*lang=' || score=$((score-10)) || true
+  grep -qi '<html[^>]*lang=' <<< \"$html\" || score=$((score-10)) || true
 
   run_lighthouse
   ACC_LH_MOBILE=$(lh_score "accessibility" "mobile")
@@ -909,23 +909,23 @@ analyze_diseno() {
   local html
   html="$HTML_CACHE"
 
-  DIS_VIEWPORT=false; echo "$html" | grep -qi 'name="viewport"' && DIS_VIEWPORT=true || true
+  DIS_VIEWPORT=false; grep -qi 'name="viewport"' <<< "$html" && DIS_VIEWPORT=true || true
   [[ "$DIS_VIEWPORT" == false ]] && score=$((score-20)) || true
 
   DIS_FRAMEWORKS=()
-  echo "$html" | grep -qi "bootstrap"   && DIS_FRAMEWORKS+=("Bootstrap")   || true
-  echo "$html" | grep -qi "tailwind"    && DIS_FRAMEWORKS+=("Tailwind CSS") || true
-  echo "$html" | grep -qi "materialize" && DIS_FRAMEWORKS+=("Materialize")  || true
-  echo "$html" | grep -qi "foundation"  && DIS_FRAMEWORKS+=("Foundation")   || true
+  grep -qi "bootstrap" <<< "$html"   && DIS_FRAMEWORKS+=("Bootstrap")   || true
+  grep -qi "tailwind" <<< "$html"    && DIS_FRAMEWORKS+=("Tailwind CSS") || true
+  grep -qi "materialize" <<< "$html" && DIS_FRAMEWORKS+=("Materialize")  || true
+  grep -qi "foundation" <<< "$html"  && DIS_FRAMEWORKS+=("Foundation")   || true
   [[ ${#DIS_FRAMEWORKS[@]} -eq 0 ]] && DIS_FRAMEWORKS=("CSS propio")
 
-  DIS_FONTS=false;     echo "$html" | grep -qi "fonts.googleapis\|font-face"        && DIS_FONTS=true     || true
-  DIS_FAVICON=false;   echo "$html" | grep -qi 'rel="icon"\|rel="shortcut icon"'    && DIS_FAVICON=true   || true
-  DIS_DARK_MODE=false; echo "$html" | grep -qi "prefers-color-scheme\|color-scheme" && DIS_DARK_MODE=true || true
+  DIS_FONTS=false;     grep -qi "fonts.googleapis\|font-face" <<< "$html"        && DIS_FONTS=true     || true
+  DIS_FAVICON=false;   grep -qi 'rel="icon"\|rel="shortcut icon"' <<< "$html"    && DIS_FAVICON=true   || true
+  DIS_DARK_MODE=false; grep -qi "prefers-color-scheme\|color-scheme" <<< "$html" && DIS_DARK_MODE=true || true
   [[ "$DIS_FAVICON" == false ]] && score=$((score-5)) || true
 
-  DIS_PRINT_CSS=false;  echo "$html" | grep -qi 'media="print"'                     && DIS_PRINT_CSS=true  || true
-  DIS_FAVICON_HI=false; echo "$html" | grep -qi '192x192\|512x512\|apple-touch-icon' && DIS_FAVICON_HI=true || true
+  DIS_PRINT_CSS=false;  grep -qi 'media="print"' <<< "$html"                     && DIS_PRINT_CSS=true  || true
+  DIS_FAVICON_HI=false; grep -qi '192x192\|512x512\|apple-touch-icon' <<< "$html" && DIS_FAVICON_HI=true || true
   DIS_BREAKPOINTS=$(echo "$html" | grep -oiE '@media[^{]+' | wc -l | tr -d '[:space:]') || DIS_BREAKPOINTS=0
   DIS_BREAKPOINTS=${DIS_BREAKPOINTS:-0}
 
@@ -953,33 +953,33 @@ analyze_tecnologia() {
   headers=$(fetch_headers "$URL")
 
   TECH_CMS="Desconocido"
-  echo "$html" | grep -qi 'wp-content\|wp-includes\|<meta[^>]*generator[^>]*WordPress' && TECH_CMS="WordPress"   || true
-  echo "$html" | grep -qi 'cdn\.shopify\.com\|Shopify\.theme'                           && TECH_CMS="Shopify"     || true
-  echo "$html" | grep -qi 'wix\.com\|X-Wix-Published-Version'                           && TECH_CMS="Wix"         || true
-  echo "$html" | grep -qi 'webflow\.io\|data-wf-site'                                   && TECH_CMS="Webflow"     || true
-  echo "$html" | grep -qi 'squarespace\.com\|Squarespace'                                && TECH_CMS="Squarespace" || true
-  echo "$html" | grep -qi 'sites\.google\.com\|<meta[^>]*generator[^>]*Drupal'          && TECH_CMS="Drupal"      || true
-  echo "$html" | grep -qi 'ghost\.io\|content=\"Ghost'                                  && TECH_CMS="Ghost"       || true
-  echo "$html" | grep -qi 'notion\.so\|notion-page'                                     && TECH_CMS="Notion"      || true
+  grep -qi 'wp-content\|wp-includes\|<meta[^>]*generator[^>]*WordPress' <<< \"$html\" && TECH_CMS="WordPress"   || true
+  grep -qi 'cdn\.shopify\.com\|Shopify\.theme' <<< \"$html\"                           && TECH_CMS="Shopify"     || true
+  grep -qi 'wix\.com\|X-Wix-Published-Version' <<< \"$html\"                           && TECH_CMS="Wix"         || true
+  grep -qi 'webflow\.io\|data-wf-site' <<< \"$html\"                                   && TECH_CMS="Webflow"     || true
+  grep -qi 'squarespace\.com\|Squarespace' <<< \"$html\"                                && TECH_CMS="Squarespace" || true
+  grep -qi 'sites\.google\.com\|<meta[^>]*generator[^>]*Drupal' <<< \"$html\"          && TECH_CMS="Drupal"      || true
+  grep -qi 'ghost\.io\|content=\"Ghost' <<< \"$html\"                                  && TECH_CMS="Ghost"       || true
+  grep -qi 'notion\.so\|notion-page' <<< \"$html\"                                     && TECH_CMS="Notion"      || true
 
   TECH_FRAMEWORK="Desconocido"
-  echo "$html" | grep -qi '__NEXT_DATA__\|/_next/'                                       && TECH_FRAMEWORK="Next.js"  || true
-  echo "$html" | grep -qi '__nuxt\|/_nuxt/'                                              && TECH_FRAMEWORK="Nuxt"     || true
-  echo "$html" | grep -qi 'data-reactroot\|__REACT_DEVTOOLS'                            && TECH_FRAMEWORK="React"    || true
-  echo "$html" | grep -qi 'data-v-\|vue\.config'                                        && TECH_FRAMEWORK="Vue"      || true
-  echo "$html" | grep -qi 'ng-version\|_nghost\|angular'                                && TECH_FRAMEWORK="Angular"  || true
-  echo "$html" | grep -qi 'svelte\|__svelte'                                            && TECH_FRAMEWORK="Svelte"   || true
-  echo "$html" | grep -qi 'astro\|data-astro'                                           && TECH_FRAMEWORK="Astro"    || true
-  echo "$html" | grep -qi 'remix\.run\|__remixContext'                                  && TECH_FRAMEWORK="Remix"    || true
+  grep -qi '__NEXT_DATA__\|/_next/' <<< \"$html\"                                       && TECH_FRAMEWORK="Next.js"  || true
+  grep -qi '__nuxt\|/_nuxt/' <<< \"$html\"                                              && TECH_FRAMEWORK="Nuxt"     || true
+  grep -qi 'data-reactroot\|__REACT_DEVTOOLS' <<< \"$html\"                            && TECH_FRAMEWORK="React"    || true
+  grep -qi 'data-v-\|vue\.config' <<< \"$html\"                                        && TECH_FRAMEWORK="Vue"      || true
+  grep -qi 'ng-version\|_nghost\|angular' <<< \"$html\"                                && TECH_FRAMEWORK="Angular"  || true
+  grep -qi 'svelte\|__svelte' <<< \"$html\"                                            && TECH_FRAMEWORK="Svelte"   || true
+  grep -qi 'astro\|data-astro' <<< \"$html\"                                           && TECH_FRAMEWORK="Astro"    || true
+  grep -qi 'remix\.run\|__remixContext' <<< \"$html\"                                  && TECH_FRAMEWORK="Remix"    || true
 
   TECH_ANALYTICS=()
-  echo "$html" | grep -qi 'gtag\|google-analytics\|analytics\.js'  && TECH_ANALYTICS+=("Google Analytics") || true
-  echo "$html" | grep -qi 'googletagmanager'                        && TECH_ANALYTICS+=("Google Tag Manager") || true
-  echo "$html" | grep -qi 'fbevents\|fbq('                         && TECH_ANALYTICS+=("Meta Pixel") || true
-  echo "$html" | grep -qi 'hotjar'                                  && TECH_ANALYTICS+=("Hotjar") || true
-  echo "$html" | grep -qi 'mixpanel'                                && TECH_ANALYTICS+=("Mixpanel") || true
-  echo "$html" | grep -qi 'segment\.com\|analytics\.js'            && TECH_ANALYTICS+=("Segment") || true
-  echo "$html" | grep -qi 'plausible'                               && TECH_ANALYTICS+=("Plausible") || true
+  grep -qi 'gtag\|google-analytics\|analytics\.js' <<< \"$html\"  && TECH_ANALYTICS+=("Google Analytics") || true
+  grep -qi 'googletagmanager' <<< \"$html\"                        && TECH_ANALYTICS+=("Google Tag Manager") || true
+  grep -qi 'fbevents\|fbq(' <<< \"$html\"                         && TECH_ANALYTICS+=("Meta Pixel") || true
+  grep -qi 'hotjar' <<< \"$html\"                                  && TECH_ANALYTICS+=("Hotjar") || true
+  grep -qi 'mixpanel' <<< \"$html\"                                && TECH_ANALYTICS+=("Mixpanel") || true
+  grep -qi 'segment\.com\|analytics\.js' <<< \"$html\"            && TECH_ANALYTICS+=("Segment") || true
+  grep -qi 'plausible' <<< \"$html\"                               && TECH_ANALYTICS+=("Plausible") || true
   [[ ${#TECH_ANALYTICS[@]} -eq 0 ]] && TECH_ANALYTICS=("Ninguno detectado")
 
   TECH_SERVER=$(echo "$headers" | grep "^server:" | head -1 | sed 's/server: //' | xargs || echo "Oculto")
@@ -1010,12 +1010,12 @@ analyze_ux() {
   local html
   html="$HTML_CACHE"
 
-  UX_NAV=false;       echo "$html" | grep -qi '<nav\|role="navigation"'             && UX_NAV=true       || true
-  UX_SEARCH=false;    echo "$html" | grep -qi 'type="search"\|input.*search'         && UX_SEARCH=true    || true
-  UX_CONTACT=false;   echo "$html" | grep -qi 'contact\|contacto\|mailto:\|tel:'    && UX_CONTACT=true   || true
-  UX_CTA=false;       echo "$html" | grep -qi 'btn\|button\|comprar\|registr\|sign' && UX_CTA=true       || true
-  UX_RESPONSIVE=false;echo "$html" | grep -qi "@media\|max-width:\|min-width:"      && UX_RESPONSIVE=true|| true
-  UX_LOADING=false;   echo "$html" | grep -qi "loading\|spinner\|skeleton"          && UX_LOADING=true   || true
+  UX_NAV=false;       grep -qi '<nav\|role="navigation"' <<< "$html"             && UX_NAV=true       || true
+  UX_SEARCH=false;    grep -qi 'type="search"\|input.*search' <<< "$html"         && UX_SEARCH=true    || true
+  UX_CONTACT=false;   grep -qi 'contact\|contacto\|mailto:\|tel:' <<< "$html"    && UX_CONTACT=true   || true
+  UX_CTA=false;       grep -qi 'btn\|button\|comprar\|registr\|sign' <<< "$html" && UX_CTA=true       || true
+  UX_RESPONSIVE=false;grep -qi "@media\|max-width:\|min-width:" <<< "$html"      && UX_RESPONSIVE=true|| true
+  UX_LOADING=false;   grep -qi "loading\|spinner\|skeleton" <<< "$html"          && UX_LOADING=true   || true
 
   [[ "$UX_NAV"       == false ]] && score=$((score-15)) || true
   [[ "$UX_CTA"       == false ]] && score=$((score-15)) || true
@@ -1026,11 +1026,11 @@ analyze_ux() {
   [[ "$UX_404" != "404" ]] && score=$((score-10)) || true
 
   UX_500=$(http_status "${URL%/}/error-500-audit-xyz")
-  UX_BREADCRUMBS=false; echo "$html" | grep -qi 'breadcrumb\|aria-label.*breadcrumb' && UX_BREADCRUMBS=true || true
-  UX_SOCIAL=false;      echo "$html" | grep -qi 'twitter\.com\|linkedin\.com\|instagram\.com\|facebook\.com' && UX_SOCIAL=true || true
-  UX_CHAT=false;        echo "$html" | grep -qi 'intercom\|drift\|zendesk\|crisp\|tidio\|freshchat' && UX_CHAT=true || true
-  UX_FORM_VALIDATION=false; echo "$html" | grep -qi 'required\|pattern=\|minlength=' && UX_FORM_VALIDATION=true || true
-  UX_LANG_SWITCH=false; echo "$html" | grep -qi 'lang-switch\|language-selector\|idioma\|hreflang' && UX_LANG_SWITCH=true || true
+  UX_BREADCRUMBS=false; grep -qi 'breadcrumb\|aria-label.*breadcrumb' <<< "$html" && UX_BREADCRUMBS=true || true
+  UX_SOCIAL=false;      grep -qi 'twitter\.com\|linkedin\.com\|instagram\.com\|facebook\.com' <<< "$html" && UX_SOCIAL=true || true
+  UX_CHAT=false;        grep -qi 'intercom\|drift\|zendesk\|crisp\|tidio\|freshchat' <<< "$html" && UX_CHAT=true || true
+  UX_FORM_VALIDATION=false; grep -qi 'required\|pattern=\|minlength=' <<< "$html" && UX_FORM_VALIDATION=true || true
+  UX_LANG_SWITCH=false; grep -qi 'lang-switch\|language-selector\|idioma\|hreflang' <<< "$html" && UX_LANG_SWITCH=true || true
 
   (( score < 0 )) && score=0; (( score > 100 )) && score=100
   set_score "ux" "$score"; SCORE_UX=$score
@@ -1043,18 +1043,18 @@ analyze_legal() {
   local html
   html="$HTML_CACHE"
 
-  LEGAL_PRIVACY=false; echo "$html" | grep -qi "privacy\|privacidad\|política"          && LEGAL_PRIVACY=true || true
-  LEGAL_TERMS=false;   echo "$html" | grep -qi "terms\|condiciones\|aviso.legal"         && LEGAL_TERMS=true   || true
-  LEGAL_COOKIES=false; echo "$html" | grep -qi "cookie\|gdpr\|rgpd\|consent"             && LEGAL_COOKIES=true || true
-  LEGAL_GDPR=false;    echo "$html" | grep -qi "gdpr\|rgpd\|reglamento.*datos"           && LEGAL_GDPR=true    || true
+  LEGAL_PRIVACY=false; grep -qi "privacy\|privacidad\|política" <<< "$html"          && LEGAL_PRIVACY=true || true
+  LEGAL_TERMS=false;   grep -qi "terms\|condiciones\|aviso.legal" <<< "$html"         && LEGAL_TERMS=true   || true
+  LEGAL_COOKIES=false; grep -qi "cookie\|gdpr\|rgpd\|consent" <<< "$html"             && LEGAL_COOKIES=true || true
+  LEGAL_GDPR=false;    grep -qi "gdpr\|rgpd\|reglamento.*datos" <<< "$html"           && LEGAL_GDPR=true    || true
 
   LEGAL_TRACKERS=()
-  echo "$html" | grep -qi "google-analytics\|gtag\|ga.js" && LEGAL_TRACKERS+=("Google Analytics") || true
-  echo "$html" | grep -qi "facebook\|fbevents\|fbq("      && LEGAL_TRACKERS+=("Facebook Pixel")   || true
-  echo "$html" | grep -qi "hotjar"                         && LEGAL_TRACKERS+=("Hotjar")           || true
-  echo "$html" | grep -qi "mixpanel"                       && LEGAL_TRACKERS+=("Mixpanel")         || true
-  echo "$html" | grep -qi "segment"                        && LEGAL_TRACKERS+=("Segment")          || true
-  echo "$html" | grep -qi "hubspot"                        && LEGAL_TRACKERS+=("HubSpot")          || true
+  grep -qi "google-analytics\|gtag\|ga.js" <<< "$html" && LEGAL_TRACKERS+=("Google Analytics") || true
+  grep -qi "facebook\|fbevents\|fbq(" <<< "$html"      && LEGAL_TRACKERS+=("Facebook Pixel")   || true
+  grep -qi "hotjar" <<< "$html"                         && LEGAL_TRACKERS+=("Hotjar")           || true
+  grep -qi "mixpanel" <<< "$html"                       && LEGAL_TRACKERS+=("Mixpanel")         || true
+  grep -qi "segment" <<< "$html"                        && LEGAL_TRACKERS+=("Segment")          || true
+  grep -qi "hubspot" <<< "$html"                        && LEGAL_TRACKERS+=("HubSpot")          || true
   [[ ${#LEGAL_TRACKERS[@]} -eq 0 ]] && LEGAL_TRACKERS=("Ninguno detectado")
 }
 
