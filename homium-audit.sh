@@ -41,8 +41,8 @@ resolve_cmd() {
   local bin="$1" pkg="${2:-$1}"
   if command -v "$bin" &>/dev/null; then
     echo "$bin"
-  elif command -v npx &>/dev/null && npx "$pkg" --version &>/dev/null 2>&1; then
-    echo "npx $pkg"
+  elif command -v npx &>/dev/null; then
+    echo "npx --yes $pkg"
   else
     echo ""
   fi
@@ -55,7 +55,7 @@ HTMLHINT_CMD=$(resolve_cmd "htmlhint" "htmlhint")
 SSLCHECK_CMD=$(resolve_cmd "ssl-checker" "ssl-checker")
 
 # ─── Usage ───────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="1.3.0"
+SCRIPT_VERSION="1.3.3"
 
 usage() {
   echo -e "${BOLD}homium-audit${RESET} v${SCRIPT_VERSION} — Auditoría profesional de sitios web"

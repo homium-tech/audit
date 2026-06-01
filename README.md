@@ -3,7 +3,7 @@
 > Herramienta de auditoría web profesional para Claude Code.
 > Analiza sitios web desde **8 dimensiones**, genera reportes Markdown listos para stakeholders y detecta el stack tecnológico completo.
 
-[![Version](https://img.shields.io/badge/versión-1.3.2-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.3.2)
+[![Version](https://img.shields.io/badge/versión-1.3.3-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.3.3)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Compatible-blueviolet)](https://claude.ai)
 [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-green)](https://www.gnu.org/software/bash/)
@@ -182,6 +182,10 @@ homium-audit/
 ---
 
 ## 📋 Changelog
+
+### v1.3.3 — Fix Lighthouse vía npx
+- **Lighthouse siempre corre** — `resolve_cmd` dejó de pre-verificar la disponibilidad del paquete npx (que descargaba el binario y podía fallar/timeout); ahora simplemente comprueba si `npx` existe y usa `npx --yes <pkg>` en tiempo de ejecución
+- **Sin instalación previa requerida** — Lighthouse, axe-core, pa11y y htmlhint se descargan automáticamente la primera vez que se necesitan
 
 ### v1.3.2 — Installer totalmente automático
 - **Homebrew automático** — Se instala solo en macOS si no está presente
