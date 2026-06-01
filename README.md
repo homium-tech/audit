@@ -189,7 +189,9 @@ homium-audit/
 - **Sprint plan** — `printf "$s1"` interpretaba el `-` de `- [ ]` como flag; corregido con `printf "%s" | sed 's/\\n/\n/g'`
 - **og:image** — El `sed` extraía el primer `content=` de la línea en lugar del de `og:image`; corregido con `grep -oE 'content="..."'` previo al sed
 - **SSL en subshell** — `ssl_full_info` se ejecutaba en subshell vía `$()` y sus variables no regresaban al scope padre; ahora se llama directamente en `analyze_seguridad`
-- **SSL parsing** — Issuer usaba `xargs` que fallaba con el apostrofe en "Let's Encrypt"; reemplazado por perl trim. SAN usaba `[^\s,]` donde `\s` es literal en BSD grep, causando que "home**s**esas.co" se truncara a "home"; corregido con `[^, ]`
+- **SSL parsing** — Issuer usaba `xargs` que fallaba con el apostrofe en "Let's Encrypt"; reemplazado por perl trim. SAN usaba `[^\s,]` donde `\s` es literal en BSD grep, causando que "homesas.co" se truncara a "home"; corregido con `[^, ]`
+- **Broken pipe warnings** — `echo "$html" | grep -qi` generaba `write error: Broken pipe` cuando grep salía temprano al encontrar el primer match; reemplazado por herestring `grep -qi 'pattern' <<< "$html"` en 40 líneas (compatible bash 3.2+)
+- **Word-splitting en heredoc** — Comparaciones `[ "$SEO_TITLE" == "AUSENTE" ]` dentro del heredoc fallaban cuando el título contenía caracteres especiales (tildes, em dash, comas); variables booleanas pre-computadas fuera del heredoc y operadores `!=` y `==` sin espacio corregidos (`"$VAR"!=` → `"$VAR" !=`)
 
 ### v1.2.0
 - **Lighthouse dual** — Mobile + Desktop en una sola auditoría con tabla comparativa
