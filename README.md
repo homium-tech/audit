@@ -3,7 +3,7 @@
 > Herramienta de auditoría web profesional para Claude Code.
 > Analiza sitios web desde **8 dimensiones**, genera reportes Markdown listos para stakeholders y detecta el stack tecnológico completo.
 
-[![Version](https://img.shields.io/badge/versión-1.3.1-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.3.1)
+[![Version](https://img.shields.io/badge/versión-1.3.2-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.3.2)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Compatible-blueviolet)](https://claude.ai)
 [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-green)](https://www.gnu.org/software/bash/)
@@ -171,7 +171,7 @@ Cada reporte `~/audits/reporte-[dominio]-[timestamp].md` incluye:
 
 ```
 homium-audit/
-├── homium-audit.sh          # Script principal (v1.3.1)
+├── homium-audit.sh          # Script principal (v1.3.2)
 ├── install.sh               # Instalador one-liner
 ├── commands/
 │   └── homium-audit.md      # Skill /homium-audit para Claude Code
@@ -182,6 +182,12 @@ homium-audit/
 ---
 
 ## 📋 Changelog
+
+### v1.3.2 — Installer totalmente automático
+- **Homebrew automático** — Se instala solo en macOS si no está presente
+- **Todas las dependencias** — `jq`, `dig`, `whois`, `node`, `go` y `webanalyze` se instalan automáticamente según la plataforma (brew / apt / dnf / yum / pacman)
+- **Sin intervención manual** — El usuario solo corre el instalador; el sistema pide contraseña una sola vez si es necesario
+- **No bloquea** — Si una herramienta falla, avisa y continúa con el resto
 
 ### v1.3.1
 - **Fix installer** — Eliminado `npm install -g` que causaba falsos positivos en antivirus y fallos de permisos; las herramientas (`lighthouse`, `axe-core`, `pa11y`, `htmlhint`) se ejecutan vía `npx` bajo demanda, sin instalación global
