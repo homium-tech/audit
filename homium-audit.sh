@@ -1117,6 +1117,23 @@ generate_report() {
                tp=90 ts=90 ta=85 tsec=90 tcy=85 tct=85 td=90 tu=88 ;;
   esac
 
+  # Pre-computar íconos de variables con posibles caracteres especiales (evita word-splitting en [ ] dentro del heredoc)
+  local ic_seo_title ic_seo_meta ic_seo_h1 ic_seo_og ic_seo_twitter ic_seo_schema ic_seo_hreflang
+  local rec_seo_title rec_seo_meta rec_seo_robots rec_seo_sitemap rec_seo_schema
+  [[ "$SEO_TITLE"    == "AUSENTE" ]] && ic_seo_title="❌"  || ic_seo_title="✅"
+  [[ "$SEO_META_DESC" == "AUSENTE" ]] && ic_seo_meta="❌"  || ic_seo_meta="✅"
+  (( ${SEO_H1_COUNT:-0} == 1 ))      && ic_seo_h1="✅"     || ic_seo_h1="⚠️"
+  [[ "$SEO_OG"          == "true" ]] && ic_seo_og="✅"      || ic_seo_og="❌"
+  [[ "$SEO_TWITTER_CARD" == "true" ]] && ic_seo_twitter="✅" || ic_seo_twitter="❌"
+  [[ "$SEO_SCHEMA"      == "true" ]] && ic_seo_schema="✅"  || ic_seo_schema="❌"
+  [[ "$SEO_HREFLANG"    == "true" ]] && ic_seo_hreflang="✅" || ic_seo_hreflang="➖"
+
+  [[ "$SEO_TITLE"    == "AUSENTE" ]] && rec_seo_title="🔴 CRÍTICO: Añadir \`<title>\` único (30-60 chars)" || rec_seo_title="Title tag presente ✓"
+  [[ "$SEO_META_DESC" == "AUSENTE" ]] && rec_seo_meta="🟠 ALTO: Crear meta description (120-160 chars)"   || rec_seo_meta="Meta description presente ✓"
+  [[ "$SEO_ROBOTS"   != "200"     ]] && rec_seo_robots="🟡 MEDIO: Crear robots.txt en la raíz"            || rec_seo_robots="robots.txt encontrado ✓"
+  [[ "$SEO_SITEMAP"  != "200"     ]] && rec_seo_sitemap="🟡 MEDIO: Generar sitemap.xml y registrar en Search Console" || rec_seo_sitemap="sitemap.xml encontrado ✓"
+  [[ "$SEO_SCHEMA"   != "true"    ]] && rec_seo_schema="🟡 MEDIO: Implementar Schema.org para rich snippets"         || rec_seo_schema="Schema.org implementado ✓"
+
   cat > "$out_file" << MDEOF
 # 🔍 Auditoría Web Profesional — ${domain}
 
@@ -1257,15 +1274,15 @@ $([ -n "${SITE_OG_IMAGE:-}" ] && echo "![Vista previa](${SITE_OG_IMAGE})" || tru
 
 | Elemento | Estado | Detalle |
 |----------|--------|---------|
-| \`<title>\` | $([ "$SEO_TITLE" == "AUSENTE" ] && echo "❌" || echo "✅") | ${SEO_TITLE:0:60} (${SEO_TITLE_LEN} chars) |
-| Meta description | $([ "$SEO_META_DESC" == "AUSENTE" ] && echo "❌" || echo "✅") | ${SEO_META_DESC_LEN} chars |
+| \`<title>\` | ${ic_seo_title} | ${SEO_TITLE:0:60} (${SEO_TITLE_LEN} chars) |
+| Meta description | ${ic_seo_meta} | ${SEO_META_DESC_LEN} chars |
 | Meta robots | ℹ️ | ${SEO_META_ROBOTS} |
-| H1 | $([ "${SEO_H1_COUNT:-0}" -eq 1 ] && echo "✅" || echo "⚠️") | ${SEO_H1_COUNT:-0} encontrados |
+| H1 | ${ic_seo_h1} | ${SEO_H1_COUNT:-0} encontrados |
 | H2 / H3 | ℹ️ | ${SEO_H2_COUNT:-0} H2 · ${SEO_H3_COUNT:-0} H3 |
-| Open Graph | $([ "$SEO_OG" == "true" ] && echo "✅" || echo "❌") | — |
-| Twitter/X Card | $([ "$SEO_TWITTER_CARD" == "true" ] && echo "✅" || echo "❌") | — |
-| Schema.org | $([ "$SEO_SCHEMA" == "true" ] && echo "✅" || echo "❌") | ${SEO_SCHEMA_TYPES:-N/A} |
-| hreflang | $([ "$SEO_HREFLANG" == "true" ] && echo "✅" || echo "➖") | — |
+| Open Graph | ${ic_seo_og} | — |
+| Twitter/X Card | ${ic_seo_twitter} | — |
+| Schema.org | ${ic_seo_schema} | ${SEO_SCHEMA_TYPES:-N/A} |
+| hreflang | ${ic_seo_hreflang} | — |
 | Links internos / externos | ℹ️ | ${SEO_INT_LINKS:-0} internos · ${SEO_EXT_LINKS:-0} externos |
 | robots.txt | $([ "$SEO_ROBOTS" == "200" ] && echo "✅" || echo "❌") | HTTP ${SEO_ROBOTS} |
 | sitemap.xml | $([ "$SEO_SITEMAP" == "200" ] && echo "✅" || echo "❌") | HTTP ${SEO_SITEMAP} |
@@ -1273,11 +1290,11 @@ $([ -n "${SEO_LH_MOBILE:-}" ] && echo "| Lighthouse SEO 📱 Mobile | ✅ ${SEO_
 $([ -n "${SEO_LH_DESKTOP:-}" ] && echo "| Lighthouse SEO 🖥️ Desktop | ✅ ${SEO_LH_DESKTOP}/100 | — |")
 
 **💡 Recomendaciones:**
-- $([ "$SEO_TITLE"    == "AUSENTE" ] && echo "🔴 CRÍTICO: Añadir \`<title>\` único (30-60 chars)"           || echo "Title tag presente ✓")
-- $([ "$SEO_META_DESC"== "AUSENTE" ] && echo "🟠 ALTO: Crear meta description (120-160 chars)"             || echo "Meta description presente ✓")
-- $([ "$SEO_ROBOTS"   != "200"    ] && echo "🟡 MEDIO: Crear robots.txt en la raíz"                       || echo "robots.txt encontrado ✓")
-- $([ "$SEO_SITEMAP"  != "200"    ] && echo "🟡 MEDIO: Generar sitemap.xml y registrar en Search Console" || echo "sitemap.xml encontrado ✓")
-- $([ "$SEO_SCHEMA"   != "true"   ] && echo "🟡 MEDIO: Implementar Schema.org para rich snippets"         || echo "Schema.org implementado ✓")
+- ${rec_seo_title}
+- ${rec_seo_meta}
+- ${rec_seo_robots}
+- ${rec_seo_sitemap}
+- ${rec_seo_schema}
 
 ---
 
@@ -1633,9 +1650,9 @@ fi
 |:---------:|--------|:-------:|:--------:|-----------|
 $([ "$SEC_HSTS"    != "true"   ] && echo "| 🔴 1 | Implementar HSTS | 4 | 1 | Seguridad |")
 $([ "$SEC_CSP"     != "true"   ] && echo "| 🔴 2 | Configurar CSP | 4 | 2 | Seguridad |")
-$([ "$SEO_TITLE"   == "AUSENTE"] && echo "| 🔴 3 | Añadir title tag | 4 | 1 | SEO |")
-$([ "$SEO_META_DESC"=="AUSENTE"] && echo "| 🟠 4 | Meta descriptions | 3 | 1 | SEO |")
-$([ "$LEGAL_COOKIES"!= "true"  ] && echo "| 🟠 5 | Banner cookies GDPR | 3 | 2 | Legal |")
+$([ "$SEO_TITLE" == "AUSENTE" ] && echo "| 🔴 3 | Añadir title tag | 4 | 1 | SEO |")
+$([ "$SEO_META_DESC" == "AUSENTE" ] && echo "| 🟠 4 | Meta descriptions | 3 | 1 | SEO |")
+$([ "$LEGAL_COOKIES" != "true" ] && echo "| 🟠 5 | Banner cookies GDPR | 3 | 2 | Legal |")
 $([ "$ACC_ARIA"    != "true"   ] && echo "| 🟠 6 | ARIA labels | 3 | 2 | Accesibilidad |")
 $([ "$SEO_SITEMAP" != "200"    ] && echo "| 🟡 7 | Generar sitemap.xml | 2 | 1 | SEO |")
 $([ "$SEO_SCHEMA"  != "true"   ] && echo "| 🟡 8 | Schema.org | 2 | 2 | SEO |")
