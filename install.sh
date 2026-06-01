@@ -116,8 +116,10 @@ for t in dig whois jq; do
 done
 
 # Node/npm para herramientas de análisis
+NPM_TOOLS_AVAILABLE=false
 if command -v node &>/dev/null && command -v npm &>/dev/null; then
-  ok "node + npm (lighthouse, axe-core, pa11y, htmlhint, screenshots disponibles)"
+  ok "node $(node --version) + npm $(npm --version)"
+  NPM_TOOLS_AVAILABLE=true
 else
   warn "node/npm no encontrado — Lighthouse, screenshots y análisis WCAG no disponibles"
   case "$OS_TYPE" in
@@ -125,6 +127,33 @@ else
     windows) echo -e "    Instala: ${CYAN}https://nodejs.org${RESET}" ;;
     linux)   echo -e "    Instala: ${CYAN}sudo apt install nodejs npm${RESET}" ;;
   esac
+fi
+
+# ─── Instalar herramientas npm ────────────────────────────────────────────────
+if [[ "$NPM_TOOLS_AVAILABLE" == true ]]; then
+  step "Instalando herramientas de análisis (npm)"
+
+  NPM_GLOBAL_PREFIX=$(npm prefix -g 2>/dev/null || echo "")
+  NPM_GLOBAL_BIN="${NPM_GLOBAL_PREFIX}/bin"
+
+  _install_npm() {
+    local pkg="$1" cmd="${2:-$1}"
+    if command -v "$cmd" &>/dev/null || [[ -f "${NPM_GLOBAL_BIN}/${cmd}" ]]; then
+      ok "${pkg} (ya instalado)"
+    else
+      info "Instalando ${pkg}..."
+      if npm install -g "$pkg" --quiet 2>/dev/null; then
+        ok "${pkg}"
+      else
+        warn "${pkg} — no se pudo instalar (puedes instalarlo manualmente: npm i -g ${pkg})"
+      fi
+    fi
+  }
+
+  _install_npm "lighthouse"          "lighthouse"
+  _install_npm "@axe-core/cli"       "axe"
+  _install_npm "pa11y"               "pa11y"
+  _install_npm "htmlhint"            "htmlhint"
 fi
 
 # webanalyze — detección de stack tecnológico (Wappalyzer fingerprints)

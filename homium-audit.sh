@@ -16,7 +16,14 @@ CHECK="✓"; CROSS="✗"; ARROW="→"; WARN="⚠"
 # ─── Config ───────────────────────────────────────────────────────────────────
 AUDIT_DIR="${HOME}/audits"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-DATE_HUMAN=$(date +"%d de %B de %Y")
+_month_num=$(date +%m)
+case "$_month_num" in
+  01) _month_es="enero"      ;; 02) _month_es="febrero"    ;; 03) _month_es="marzo"      ;;
+  04) _month_es="abril"      ;; 05) _month_es="mayo"       ;; 06) _month_es="junio"      ;;
+  07) _month_es="julio"      ;; 08) _month_es="agosto"     ;; 09) _month_es="septiembre" ;;
+  10) _month_es="octubre"    ;; 11) _month_es="noviembre"  ;; 12) _month_es="diciembre"  ;;
+esac
+DATE_HUMAN="$(date +%d) de ${_month_es} de $(date +%Y)"
 TIMEOUT=30
 
 # ─── Temp dir (declarado primero para que todo lo use) ────────────────────────
@@ -587,9 +594,10 @@ analyze_seo() {
   step "Analizando SEO"
 
   info "Extrayendo logo e imagen del sitio..."
-  SITE_OG_IMAGE=$(echo "$HTML_CACHE" | grep -i 'property="og:image"' \
+  SITE_OG_IMAGE=$(echo "$HTML_CACHE" | grep -iE 'property="og:image"[^:-]' \
     | grep -oiE 'content="[^"]+"' | sed 's/content="\([^"]*\)"/\1/' \
     | head -1 | xargs 2>/dev/null) || SITE_OG_IMAGE=""
+  [[ "$SITE_OG_IMAGE" != http* ]] && SITE_OG_IMAGE=""
   SITE_FAVICON=$(echo "$HTML_CACHE" | grep -iE 'rel="(icon|shortcut icon)"' \
     | sed 's/.*href="\([^"]*\)".*/\1/' | head -1 | xargs 2>/dev/null) || SITE_FAVICON=""
   # Normalizar favicon relativo a URL absoluta
@@ -975,7 +983,7 @@ analyze_tecnologia() {
   TECH_ANALYTICS=()
   grep -qi 'gtag\|google-analytics\|analytics\.js' <<< \"$html\"  && TECH_ANALYTICS+=("Google Analytics") || true
   grep -qi 'googletagmanager' <<< \"$html\"                        && TECH_ANALYTICS+=("Google Tag Manager") || true
-  grep -qi 'fbevents\|fbq(' <<< \"$html\"                         && TECH_ANALYTICS+=("Meta Pixel") || true
+  grep -qi 'fbevents\|fbq(\|facebook\.net\|connect\.facebook' <<< "$html" && TECH_ANALYTICS+=("Meta Pixel") || true
   grep -qi 'hotjar' <<< \"$html\"                                  && TECH_ANALYTICS+=("Hotjar") || true
   grep -qi 'mixpanel' <<< \"$html\"                                && TECH_ANALYTICS+=("Mixpanel") || true
   grep -qi 'segment\.com\|analytics\.js' <<< \"$html\"            && TECH_ANALYTICS+=("Segment") || true
@@ -1260,8 +1268,8 @@ fi)
 **💡 Recomendaciones:**
 - $([ "${PERF_RESP_SEVERITY:-bajo}" != "bajo" ] && echo "🟠 Optimizar TTFB a <600ms (CDN, caché de servidor, optimización de base de datos)" || echo "Tiempo de respuesta óptimo ✓")
 - $([ "${PERF_CDN:-No detectado}" == "No detectado" ] && echo "🟡 Implementar CDN para reducir latencia geográfica y tiempo de carga" || echo "CDN activo ✓")
-- $(echo "$PERF_PROTOCOL" | grep -q "2\|3" || echo "🟡 Migrar a HTTP/2 o HTTP/3 — multiplexación de requests paralelos")
-- $(echo "$PERF_COMPRESSION" | grep -qi "gzip\|br\|deflate" || echo "🟡 Activar compresión Gzip/Brotli — reduce el tamaño de transferencia hasta un 70%")
+- $(echo "$PERF_PROTOCOL" | grep -q "2\|3" && echo "Protocolo HTTP/2+ activo ✓" || echo "🟡 Migrar a HTTP/2 o HTTP/3 — multiplexación de requests paralelos")
+- $(echo "$PERF_COMPRESSION" | grep -qi "gzip\|br\|deflate" && echo "Compresión activa ✓" || echo "🟡 Activar compresión Gzip/Brotli — reduce el tamaño de transferencia hasta un 70%")
 - $([ "${PERF_JS_COUNT:-0}" -gt 20 ] && echo "🟡 Consolidar o diferir scripts JS (${PERF_JS_COUNT} detectados) — cada request adicional suma latencia" || echo "Cantidad de scripts JS aceptable ✓")
 
 ---
@@ -1364,7 +1372,7 @@ $([ -n "${SEC_SSLCHECK_RESULT:-}" ] && echo "| ssl-checker | \`${SEC_SSLCHECK_RE
 | Referrer-Policy                  | $([ "$SEC_RP"   == "true" ] && echo "✅" || echo "❌") | — | 🟡 Medio |
 | Permissions-Policy               | $([ "$SEC_PER"  == "true" ] && echo "✅" || echo "❌") | — | 🟡 Medio |
 | Subresource Integrity (SRI)      | $([ "$SEC_SRI"  == "true" ] && echo "✅" || echo "➖") | — | 🟡 Medio |
-| HTTPS Redirect                   | $([ "$SEC_HTTPS_REDIRECT" == "true" ] && echo "✅" || echo "❌") | 🔴 Crítico |
+| HTTPS Redirect                   | $([ "$SEC_HTTPS_REDIRECT" == "true" ] && echo "✅" || echo "❌") | — | 🔴 Crítico |
 | Cookies Secure                   | $([ "$SEC_COOKIE_SECURE"   == "true" ] && echo "✅" || echo "⚠️") | 🟠 Alto |
 | Cookies HttpOnly                 | $([ "$SEC_COOKIE_HTTPONLY" == "true" ] && echo "✅" || echo "⚠️") | 🟠 Alto |
 
@@ -1648,15 +1656,18 @@ fi
 
 | Prioridad | Acción | Impacto | Esfuerzo | Dimensión |
 |:---------:|--------|:-------:|:--------:|-----------|
-$([ "$SEC_HSTS"    != "true"   ] && echo "| 🔴 1 | Implementar HSTS | 4 | 1 | Seguridad |")
-$([ "$SEC_CSP"     != "true"   ] && echo "| 🔴 2 | Configurar CSP | 4 | 2 | Seguridad |")
-$([ "$SEO_TITLE" == "AUSENTE" ] && echo "| 🔴 3 | Añadir title tag | 4 | 1 | SEO |")
-$([ "$SEO_META_DESC" == "AUSENTE" ] && echo "| 🟠 4 | Meta descriptions | 3 | 1 | SEO |")
-$([ "$LEGAL_COOKIES" != "true" ] && echo "| 🟠 5 | Banner cookies GDPR | 3 | 2 | Legal |")
-$([ "$ACC_ARIA"    != "true"   ] && echo "| 🟠 6 | ARIA labels | 3 | 2 | Accesibilidad |")
-$([ "$SEO_SITEMAP" != "200"    ] && echo "| 🟡 7 | Generar sitemap.xml | 2 | 1 | SEO |")
-$([ "$SEO_SCHEMA"  != "true"   ] && echo "| 🟡 8 | Schema.org | 2 | 2 | SEO |")
-$([ "$DIS_FAVICON" != "true"   ] && echo "| 🟢 9 | Favicon | 1 | 1 | Diseño |")
+$(
+  _p=0
+  [ "$SEC_HSTS"       != "true"   ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Implementar HSTS | 4 | 1 | Seguridad |"; }
+  [ "$SEC_CSP"        != "true"   ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Configurar CSP | 4 | 2 | Seguridad |"; }
+  [ "$SEO_TITLE"     == "AUSENTE" ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Añadir title tag | 4 | 1 | SEO |"; }
+  [ "$SEO_META_DESC" == "AUSENTE" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Meta descriptions | 3 | 1 | SEO |"; }
+  [ "$LEGAL_COOKIES"  != "true"   ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Banner cookies GDPR | 3 | 2 | Legal |"; }
+  [ "$ACC_ARIA"       != "true"   ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | ARIA labels | 3 | 2 | Accesibilidad |"; }
+  [ "$SEO_SITEMAP"    != "200"    ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | Generar sitemap.xml | 2 | 1 | SEO |"; }
+  [ "$SEO_SCHEMA"     != "true"   ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | Schema.org | 2 | 2 | SEO |"; }
+  [ "$DIS_FAVICON"    != "true"   ] && { _p=$((_p+1)); echo "| 🟢 ${_p} | Favicon | 1 | 1 | Diseño |"; }
+)
 
 ---
 
@@ -1866,20 +1877,24 @@ main() {
   if command -v jq &>/dev/null; then
     if [[ "$LH_DONE_MOBILE" == true && -f "$LH_JSON_MOBILE" ]]; then
       local ss_data
-      ss_data=$(jq -r '.audits["final-screenshot"].details.data // ""' "$LH_JSON_MOBILE" 2>/dev/null || echo "")
+      ss_data=$(jq -r '.audits["full-page-screenshot"].details.screenshot.data // ""' "$LH_JSON_MOBILE" 2>/dev/null || echo "")
+      [[ -z "$ss_data" || "$ss_data" == "null" ]] && \
+        ss_data=$(jq -r '.audits["final-screenshot"].details.data // ""' "$LH_JSON_MOBILE" 2>/dev/null || echo "")
       if [[ -n "$ss_data" && "$ss_data" != "null" ]]; then
-        local ss_file="${OUTPUT_DIR}/screenshot-mobile-${SLUG}-${TIMESTAMP}.jpg"
-        echo "$ss_data" | sed 's|data:image/jpeg;base64,||' | base64 -d > "$ss_file" 2>/dev/null \
+        local ss_file="${OUTPUT_DIR}/screenshot-mobile-${SLUG}-${TIMESTAMP}.webp"
+        echo "$ss_data" | sed 's|^data:[^;]*;base64,||' | base64 -d > "$ss_file" 2>/dev/null \
           && SCREENSHOT_MOBILE="$ss_file" || true
         [[ -n "$SCREENSHOT_MOBILE" ]] && ok "Screenshot mobile guardado" || true
       fi
     fi
     if [[ "$LH_DONE_DESKTOP" == true && -f "$LH_JSON_DESKTOP" ]]; then
       local ss_data
-      ss_data=$(jq -r '.audits["final-screenshot"].details.data // ""' "$LH_JSON_DESKTOP" 2>/dev/null || echo "")
+      ss_data=$(jq -r '.audits["full-page-screenshot"].details.screenshot.data // ""' "$LH_JSON_DESKTOP" 2>/dev/null || echo "")
+      [[ -z "$ss_data" || "$ss_data" == "null" ]] && \
+        ss_data=$(jq -r '.audits["final-screenshot"].details.data // ""' "$LH_JSON_DESKTOP" 2>/dev/null || echo "")
       if [[ -n "$ss_data" && "$ss_data" != "null" ]]; then
-        local ss_file="${OUTPUT_DIR}/screenshot-desktop-${SLUG}-${TIMESTAMP}.jpg"
-        echo "$ss_data" | sed 's|data:image/jpeg;base64,||' | base64 -d > "$ss_file" 2>/dev/null \
+        local ss_file="${OUTPUT_DIR}/screenshot-desktop-${SLUG}-${TIMESTAMP}.webp"
+        echo "$ss_data" | sed 's|^data:[^;]*;base64,||' | base64 -d > "$ss_file" 2>/dev/null \
           && SCREENSHOT_DESKTOP="$ss_file" || true
         [[ -n "$SCREENSHOT_DESKTOP" ]] && ok "Screenshot desktop guardado" || true
       fi
