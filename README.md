@@ -3,7 +3,7 @@
 > Herramienta de auditoría web profesional para Claude Code.
 > Analiza sitios web desde **8 dimensiones**, genera reportes Markdown listos para stakeholders y detecta el stack tecnológico completo.
 
-[![Version](https://img.shields.io/badge/versión-1.2.0-blue.svg)](https://github.com/homium-tech/audit)
+[![Version](https://img.shields.io/badge/versión-1.3.0-blue.svg)](https://github.com/homium-tech/audit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Compatible-blueviolet)](https://claude.ai)
 [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-green)](https://www.gnu.org/software/bash/)
@@ -171,7 +171,7 @@ Cada reporte `~/audits/reporte-[dominio]-[timestamp].md` incluye:
 
 ```
 homium-audit/
-├── homium-audit.sh          # Script principal (v1.2.0)
+├── homium-audit.sh          # Script principal (v1.3.0)
 ├── install.sh               # Instalador one-liner
 ├── commands/
 │   └── homium-audit.md      # Skill /homium-audit para Claude Code
@@ -182,6 +182,16 @@ homium-audit/
 ---
 
 ## 📋 Changelog
+
+### v1.3.0
+- **Installer auto-npm** — `install.sh` instala automáticamente `lighthouse`, `axe-core`, `pa11y` y `htmlhint` si node/npm está disponible; verifica si ya están instalados antes de reinstalar
+- **Screenshots mejorados** — Usa `full-page-screenshot` de Lighthouse (página completa, ~1280px) con fallback automático a `final-screenshot` para compatibilidad con versiones anteriores
+- **Fecha en español** — El reporte mostraba el mes en inglés ("June"); corregido con lookup table de meses en español compatible con bash 3.2+
+- **og:image inválida** — Descarta valores no-URL (ej. "website") para evitar imágenes rotas en el reporte
+- **Recomendaciones Performance** — Líneas de protocolo y compresión mostraban vacías cuando estaban OK; ahora muestran confirmación positiva
+- **Tabla seguridad** — Fila "HTTPS Redirect" tenía 3 columnas en tabla de 4; corregida columna faltante
+- **Meta Pixel** — Patrón de detección ampliado a `facebook.net` y `connect.facebook` para capturar pixel cargado desde CDN
+- **Matriz de priorización** — Numeración secuencial dinámica; ya no salta números cuando ítems previos están OK
 
 ### v1.2.1 — Bugfixes
 - **Slug de dominio** — `normalize_domain` usaba `\?` (no soportado en BSD sed de macOS); reemplazado por dos `sed` separados para `http://` y `https://`. El nombre del reporte ahora es `reporte-dominio-co-...` en lugar de `reporte-https-...`
