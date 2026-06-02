@@ -3,7 +3,7 @@
 > Herramienta de auditoría web profesional para Claude Code.
 > Analiza sitios web desde **8 dimensiones**, genera reportes Markdown listos para stakeholders y detecta el stack tecnológico completo.
 
-[![Version](https://img.shields.io/badge/versión-1.3.4-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.3.4)
+[![Version](https://img.shields.io/badge/versión-1.4.0-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.4.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Compatible-blueviolet)](https://claude.ai)
 [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-green)](https://www.gnu.org/software/bash/)
@@ -23,7 +23,7 @@
 | 🎨 Diseño | curl · Lighthouse | Frameworks, dark mode, favicon hi-res, print stylesheet, breakpoints |
 | 👤 UX | curl | Nav, CTAs, chat widget, redes sociales, breadcrumbs, validación formularios |
 
-**Nuevo en v1.2:** Sección **Stack Tecnológico** (CMS, framework JS, lenguaje backend, CDN, analytics) y sección **Email Deliverability** con score propio.
+**Nuevo en v1.4:** Genera un reporte **JSON estructurado** junto al `.md` en cada auditoría — base para integraciones y el dashboard de [homium-audit-platform](https://github.com/homium-tech/audit-platform).
 
 ---
 
@@ -35,7 +35,7 @@ curl -sSL https://raw.githubusercontent.com/homium-tech/audit/main/install.sh | 
 
 El instalador detecta automáticamente el sistema operativo y configura todo.
 
-### Actualizar a v1.2
+### Actualizar a la última versión
 
 ```bash
 homium-audit --update
@@ -147,7 +147,11 @@ performance, seo, accesibilidad, seguridad, ciberseguridad, calidad, diseno, ux
 
 ## 📄 Estructura del Reporte
 
-Cada reporte `~/audits/reporte-[dominio]-[timestamp].md` incluye:
+Cada auditoría genera dos archivos en `~/audits/`:
+- `reporte-[dominio]-[timestamp].md` — reporte visual para stakeholders
+- `reporte-[dominio]-[timestamp].json` — datos estructurados para integraciones
+
+El `.md` incluye:
 
 1. **Capturas de pantalla** *(si Lighthouse disponible)* — Mobile y desktop side-by-side
 2. **Resumen Ejecutivo** — Para gerentes y stakeholders no técnicos
@@ -171,7 +175,7 @@ Cada reporte `~/audits/reporte-[dominio]-[timestamp].md` incluye:
 
 ```
 homium-audit/
-├── homium-audit.sh          # Script principal (v1.3.2)
+├── homium-audit.sh          # Script principal (v1.4.0)
 ├── install.sh               # Instalador one-liner
 ├── commands/
 │   └── homium-audit.md      # Skill /homium-audit para Claude Code
@@ -181,7 +185,21 @@ homium-audit/
 
 ---
 
+## 🔗 Ecosistema
+
+Este repo es el **motor de recolección de datos**. Para el dashboard, gestión de auditorías y reportes web automáticos, ver:
+
+**[homium-audit-platform](https://github.com/homium-tech/audit-platform)** — plataforma web que consume el JSON generado por este script.
+
+---
+
 ## 📋 Changelog
+
+### v1.4.0 — JSON output estructurado
+- **Nuevo archivo `.json`** — cada auditoría genera `reporte-[slug]-[timestamp].json` junto al `.md` en `~/audits/`
+- **Schema v1.0** — cubre todos los datos del reporte: scores, benchmarks, Core Web Vitals numéricos, hallazgos por dimensión con severidad y recomendación, priority matrix, sprint plan, correction guide con code snippets, perspectives por rol, narrative y evolution deltas
+- **Base para Audit Platform** — el JSON es el contrato de datos entre este script y [homium-audit-platform](https://github.com/homium-tech/audit-platform)
+- **Campos v2 reservados** — campos `null` para features futuros: word count, lazy loading, third-party scripts, IPv6, source maps, etc.
 
 ### v1.3.4 — Detección automática de Chrome para Lighthouse (Windows + macOS + Linux)
 - **Rutas Windows soportadas** — Detecta Chrome en `C:/Program Files/Google/Chrome/...`, `Program Files (x86)` y AppData del usuario; convierte rutas Git Bash (`/c/...`) al formato `C:/...` que espera Node.js
