@@ -1875,6 +1875,537 @@ fi
 MDEOF
 }
 
+# ─── Generate JSON ─────────────────────────────────────────────────────────────
+generate_json() {
+  local out_file="$1"
+  local domain="${URL#*://}"; domain="${domain%%/*}"
+
+  # Helpers
+  _je() { printf '%s' "${1}" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\r' | tr '\n' ' '; }
+  _jb() { [[ "${1}" == "true" ]] && printf 'true' || printf 'false'; }
+  _lhnum() {
+    local val; val=$(lh_metric "$1" "$2" 2>/dev/null || echo "")
+    [[ -z "$val" || "$val" == "N/A" || "$val" == "—" ]] && printf 'null' && return
+    printf '%s' "$val" | tr -d ',' | sed 's/ s$//' | sed 's/ ms$//' | grep -oE '[0-9]+\.?[0-9]*' | head -1 || printf 'null'
+  }
+  _jarr() {
+    local first=true out="["
+    for item in "$@"; do
+      [[ "$first" == "true" ]] && first=false || out="${out},"
+      out="${out}\"$(_je "$item")\""
+    done
+    printf '%s' "${out}]"
+  }
+
+  # Benchmarks (same logic as generate_report)
+  local bp bs ba bsec bcy bct bd bu tp ts ta tsec tcy tct td tu
+  case "${SECTOR:-general}" in
+    ecommerce) bp=72 bs=75 ba=58 bsec=55 bcy=50 bct=65 bd=70 bu=75 tp=92 ts=92 ta=85 tsec=88 tcy=82 tct=88 td=92 tu=92 ;;
+    saas)      bp=70 bs=68 ba=60 bsec=65 bcy=58 bct=70 bd=65 bu=70 tp=92 ts=88 ta=88 tsec=92 tcy=85 tct=90 td=88 tu=90 ;;
+    blog)      bp=68 bs=80 ba=55 bsec=48 bcy=42 bct=62 bd=60 bu=62 tp=90 ts=95 ta=82 tsec=80 tcy=75 tct=85 td=85 tu=85 ;;
+    landing)   bp=75 bs=70 ba=55 bsec=50 bcy=45 bct=60 bd=72 bu=78 tp=95 ts=90 ta=82 tsec=85 tcy=80 tct=85 td=92 tu=92 ;;
+    portfolio) bp=65 bs=65 ba=55 bsec=48 bcy=42 bct=62 bd=80 bu=70 tp=90 ts=85 ta=82 tsec=80 tcy=75 tct=85 td=95 tu=90 ;;
+    *)         bp=65 bs=70 ba=55 bsec=50 bcy=45 bct=60 bd=65 bu=60 tp=90 ts=90 ta=85 tsec=90 tcy=85 tct=85 td=90 tu=88 ;;
+  esac
+
+  # ISO timestamp
+  local iso_ts; iso_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$TIMESTAMP")
+
+  # Email deliverability (re-compute)
+  local email_score=100 spf_bool=false dmarc_bool=false dkim_bool=false mx_bool=false bimi_bool=false
+  echo "$CYBER_SPF"   | grep -qi "v=spf"   && spf_bool=true   || email_score=$((email_score-30))
+  echo "$CYBER_DMARC" | grep -qi "v=DMARC" && dmarc_bool=true || email_score=$((email_score-30))
+  echo "$CYBER_DKIM"  | grep -qi "v=DKIM"  && dkim_bool=true  || email_score=$((email_score-25))
+  [ "${SEC_MX:-AUSENTE}" != "AUSENTE" ] && mx_bool=true || email_score=$((email_score-10))
+  echo "$CYBER_BIMI"  | grep -qi "v=BIMI"  && bimi_bool=true  || true
+  (( email_score < 0 )) && email_score=0
+
+  # Null-safe numeric fields
+  local ssl_days hsts_maxage
+  (( ${SEC_SSL_DAYS:--1} >= 0 )) && ssl_days="${SEC_SSL_DAYS}" || ssl_days="null"
+  (( ${SEC_HSTS_MAXAGE:-0} > 0 )) && hsts_maxage="${SEC_HSTS_MAXAGE}" || hsts_maxage="null"
+
+  # Arrays
+  local json_css_frameworks json_analytics json_trackers json_san
+  local json_nameservers json_schema_types json_exposed_paths json_webanalyze
+  local json_ss_mobile json_ss_desktop json_dimensions_run
+
+  json_css_frameworks=$(_jarr "${DIS_FRAMEWORKS[@]}")
+  json_analytics=$(_jarr "${TECH_ANALYTICS[@]}")
+  json_trackers=$(_jarr "${LEGAL_TRACKERS[@]}")
+  json_san=$(_jarr ${SSL_SAN})
+
+  if [[ "${CYBER_EXPOSED_DIRS[0]:-Ninguno detectado}" == "Ninguno detectado" ]]; then
+    json_exposed_paths="[]"
+  else
+    json_exposed_paths=$(_jarr "${CYBER_EXPOSED_DIRS[@]}")
+  fi
+
+  local _ns_first=true; json_nameservers="["
+  while IFS= read -r _ns; do
+    _ns=$(echo "$_ns" | xargs 2>/dev/null || echo "")
+    [[ -z "$_ns" || "$_ns" == "Desconocido" ]] && continue
+    [[ "$_ns_first" == "true" ]] && _ns_first=false || json_nameservers="${json_nameservers},"
+    json_nameservers="${json_nameservers}\"$(_je "$_ns")\""
+  done <<< "$(echo "${SEC_DOM_NAMESERVERS:-}" | tr ',' '\n')"
+  json_nameservers="${json_nameservers}]"
+
+  local _st_first=true; json_schema_types="["
+  while IFS= read -r _st; do
+    _st=$(echo "$_st" | xargs 2>/dev/null || echo "")
+    [[ -z "$_st" || "$_st" == "N/A" ]] && continue
+    [[ "$_st_first" == "true" ]] && _st_first=false || json_schema_types="${json_schema_types},"
+    json_schema_types="${json_schema_types}\"$(_je "$_st")\""
+  done <<< "$(echo "${SEO_SCHEMA_TYPES:-}" | tr ',' '\n')"
+  json_schema_types="${json_schema_types}]"
+
+  [[ -n "${TECH_WEBANALYZE:-}" ]] && json_webanalyze="\"$(_je "$TECH_WEBANALYZE")\"" || json_webanalyze="null"
+  [[ -n "${SCREENSHOT_MOBILE:-}" ]]  && json_ss_mobile="\"$(_je "$(basename "$SCREENSHOT_MOBILE")")\""  || json_ss_mobile="null"
+  [[ -n "${SCREENSHOT_DESKTOP:-}" ]] && json_ss_desktop="\"$(_je "$(basename "$SCREENSHOT_DESKTOP")")\"" || json_ss_desktop="null"
+
+  if [[ -n "$DIMENSIONS" ]]; then
+    local _dr_first=true; json_dimensions_run="["
+    while IFS= read -r _dim; do
+      _dim=$(echo "$_dim" | xargs 2>/dev/null || echo "")
+      [[ -z "$_dim" ]] && continue
+      [[ "$_dr_first" == "true" ]] && _dr_first=false || json_dimensions_run="${json_dimensions_run},"
+      json_dimensions_run="${json_dimensions_run}\"${_dim}\""
+    done <<< "$(echo "$DIMENSIONS" | tr ',' '\n')"
+    json_dimensions_run="${json_dimensions_run}]"
+  else
+    json_dimensions_run='["performance","seo","accesibilidad","seguridad","ciberseguridad","calidad_tecnica","diseno","ux"]'
+  fi
+
+  # Findings builder
+  local _fj=""
+  _fa() {
+    local _entry="{\"severity\":\"${1}\",\"element\":\"${2}\",\"value\":\"$(_je "${3}")\",\"description\":\"$(_je "${4}")\",\"recommendation\":\"$(_je "${5}")\"}"
+    [[ -n "$_fj" ]] && _fj="${_fj}," || true
+    _fj="${_fj}${_entry}"
+  }
+
+  # Performance findings
+  _fj=""
+  [[ "${PERF_RESP_SEVERITY:-bajo}" != "bajo" ]] && _fa "${PERF_RESP_SEVERITY}" "response_ms" "${PERF_RESP_MS}ms" "Tiempo de respuesta elevado (${PERF_RESP_MS}ms)" "Implementar CDN y optimizar caché de servidor"
+  (( ${PERF_TTFB_MS:-0} > 600 )) && _fa "alto" "ttfb" "${PERF_TTFB_MS}ms" "TTFB superior a 600ms" "Optimizar backend y activar caché de servidor"
+  (( ${PERF_REDIRECTS:-0} > 2 )) && _fa "medio" "redirects" "${PERF_REDIRECTS}" "Cadena de redirects excesiva" "Reducir a máximo 1-2 redirects"
+  [[ "${PERF_CDN:-No detectado}" == "No detectado" ]] && _fa "medio" "cdn" "No detectado" "Sin CDN — latencia geográfica no optimizada" "Implementar Cloudflare o CloudFront"
+  echo "${PERF_PROTOCOL:-}" | grep -q "2\|3" || _fa "medio" "protocol" "${PERF_PROTOCOL:-HTTP/1.1}" "Protocolo HTTP/1.1 sin multiplexación" "Migrar a HTTP/2 o HTTP/3"
+  echo "${PERF_COMPRESSION:-}" | grep -qi "gzip\|br\|deflate" || _fa "medio" "compression" "Inactiva" "Sin compresión — tamaño elevado" "Activar Gzip/Brotli en el servidor"
+  (( ${PERF_JS_COUNT:-0} > 20 )) && _fa "medio" "js_count" "${PERF_JS_COUNT}" "Exceso de scripts JS (${PERF_JS_COUNT})" "Consolidar y diferir scripts no críticos"
+  local JSON_F_PERF="[${_fj}]"
+
+  # SEO findings
+  _fj=""
+  [[ "${SEO_TITLE:-}" == "AUSENTE" ]] && _fa "critico" "title" "AUSENTE" "Title tag ausente — CTR orgánico cercano a cero" "Añadir <title> único de 50-60 chars"
+  [[ "${SEO_META_DESC:-}" == "AUSENTE" ]] && _fa "critico" "meta_description" "AUSENTE" "Meta description ausente" "Crear meta description de 120-160 chars"
+  (( ${SEO_H1_COUNT:-0} == 0 )) && _fa "alto" "h1" "0" "Sin H1 — falta señal principal de keyword" "Añadir un único H1 con la keyword principal"
+  (( ${SEO_H1_COUNT:-0} > 1 )) && _fa "medio" "h1_multiple" "${SEO_H1_COUNT}" "Múltiples H1 — señal semántica confusa" "Reducir a un único H1 por página"
+  [[ "${SEO_OG:-false}" != "true" ]] && _fa "medio" "og_tags" "false" "Sin Open Graph — preview desfavorable en redes" "Añadir og:title, og:description, og:image"
+  [[ "${SEO_ROBOTS:-}" != "200" ]] && _fa "medio" "robots_txt" "${SEO_ROBOTS:-0}" "robots.txt ausente" "Crear robots.txt en la raíz del sitio"
+  [[ "${SEO_SITEMAP:-}" != "200" ]] && _fa "medio" "sitemap_xml" "${SEO_SITEMAP:-0}" "sitemap.xml ausente" "Generar sitemap.xml y registrar en Search Console"
+  [[ "${SEO_SCHEMA:-false}" != "true" ]] && _fa "bajo" "schema_org" "false" "Sin Schema.org — sin rich snippets en Google" "Implementar structured data según tipo de contenido"
+  local JSON_F_SEO="[${_fj}]"
+
+  # Accesibilidad findings
+  _fj=""
+  (( ${ACC_IMGS_NO_ALT:-0} > 0 )) && _fa "alto" "images_alt" "${ACC_IMGS_NO_ALT} sin alt" "${ACC_IMGS_NO_ALT} imágenes sin atributo alt" "Añadir alt descriptivo a cada imagen"
+  [[ "${ACC_ARIA:-false}" != "true" ]] && _fa "alto" "aria" "false" "Sin atributos ARIA en componentes interactivos" "Implementar aria-label, aria-labelledby y role"
+  [[ "${ACC_SKIP:-false}" != "true" ]] && _fa "medio" "skip_navigation" "false" "Sin skip navigation para usuarios de teclado" "Añadir enlace Skip to main content al inicio del body"
+  (( ${ACC_FORMS:-0} > 0 )) && (( ${ACC_LABELS:-0} < ${ACC_FORMS:-0} )) && _fa "alto" "form_labels" "${ACC_LABELS:-0}/${ACC_FORMS:-0}" "Formularios sin labels suficientes" "Asociar <label> a cada campo de formulario"
+  local JSON_F_ACC="[${_fj}]"
+
+  # Seguridad findings
+  _fj=""
+  [[ "${SEC_HSTS:-false}" != "true" ]] && _fa "critico" "hsts" "false" "HSTS no configurado — vulnerable a MITM" "Strict-Transport-Security: max-age=31536000; includeSubDomains"
+  [[ "${SEC_CSP:-false}" != "true" ]] && _fa "critico" "csp" "false" "CSP ausente — vulnerable a XSS" "Configurar CSP con directivas adecuadas"
+  [[ "${SEC_CSP_UNSAFE:-false}" == "true" ]] && _fa "alto" "csp_unsafe" "unsafe-inline" "CSP con unsafe-inline — protección XSS reducida" "Eliminar unsafe-inline y usar nonces o hashes"
+  [[ "${SEC_XCTO:-false}" != "true" ]] && _fa "alto" "x_content_type_options" "false" "X-Content-Type-Options ausente" "Añadir: X-Content-Type-Options: nosniff"
+  [[ "${SEC_XFO:-false}" != "true" ]] && _fa "alto" "x_frame_options" "false" "X-Frame-Options ausente — vulnerable a clickjacking" "Añadir: X-Frame-Options: DENY"
+  [[ "${SEC_RP:-false}" != "true" ]] && _fa "medio" "referrer_policy" "false" "Referrer-Policy ausente" "Añadir: Referrer-Policy: strict-origin-when-cross-origin"
+  [[ "${SEC_PER:-false}" != "true" ]] && _fa "medio" "permissions_policy" "false" "Permissions-Policy ausente" "Configurar Permissions-Policy para limitar APIs del navegador"
+  [[ "${SEC_HTTPS_REDIRECT:-false}" != "true" ]] && _fa "critico" "https_redirect" "false" "Sin redirección HTTP → HTTPS" "Configurar redirect 301 en el servidor"
+  [[ "${SEC_COOKIE_SECURE:-true}" != "true" ]] && _fa "alto" "cookie_secure" "false" "Cookies sin flag Secure" "Añadir flag Secure a todas las cookies de sesión"
+  [[ "${SEC_COOKIE_HTTPONLY:-true}" != "true" ]] && _fa "alto" "cookie_httponly" "false" "Cookies sin flag HttpOnly" "Añadir flag HttpOnly para prevenir acceso JS"
+  local JSON_F_SEC="[${_fj}]"
+
+  # Ciberseguridad findings
+  _fj=""
+  echo "${CYBER_SERVER:-}" | grep -qiE "[0-9]\.|apache|nginx|iis|php" && _fa "alto" "server_header" "$CYBER_SERVER" "Versión de servidor expuesta en header Server" "Ocultar versión en configuración del servidor"
+  [[ -n "${CYBER_POWERED_BY:-}" && "${CYBER_POWERED_BY}" != "Oculto" ]] && _fa "medio" "powered_by" "$CYBER_POWERED_BY" "X-Powered-By expone tecnología del backend" "Eliminar o suprimir header X-Powered-By"
+  [[ "${CYBER_EXPOSED_DIRS[0]:-Ninguno detectado}" != "Ninguno detectado" ]] && _fa "critico" "exposed_paths" "${CYBER_EXPOSED_DIRS[*]}" "Directorios sensibles accesibles públicamente" "Restringir acceso via .htaccess o configuración del servidor"
+  [[ "${CYBER_SEC_TXT:-}" != "200" ]] && _fa "bajo" "security_txt" "${CYBER_SEC_TXT:-404}" "security.txt ausente" "Crear /.well-known/security.txt con contacto de seguridad"
+  [[ "$CYBER_SPF"   == "AUSENTE" ]] && _fa "alto"  "spf"   "AUSENTE" "SPF ausente — dominio susceptible a spoofing" "Configurar registro SPF en DNS"
+  [[ "$CYBER_DMARC" == "AUSENTE" ]] && _fa "alto"  "dmarc" "AUSENTE" "DMARC ausente" "Configurar registro DMARC en DNS"
+  [[ "$CYBER_DKIM"  == "AUSENTE" ]] && _fa "medio" "dkim"  "AUSENTE" "DKIM ausente" "Configurar DKIM en el servidor de correo"
+  local JSON_F_CYBER="[${_fj}]"
+
+  # Calidad técnica findings
+  _fj=""
+  [[ "${CT_DOCTYPE:-false}" != "true" ]] && _fa "critico" "doctype" "false" "DOCTYPE ausente — modo quirks activo" "Añadir <!DOCTYPE html> como primera línea del HTML"
+  [[ "${CT_LANG:-false}" != "true" ]] && _fa "alto" "lang_attribute" "false" "Atributo lang ausente en <html>" "Añadir lang='es' al elemento <html>"
+  [[ "${CT_CANONICAL:-false}" != "true" ]] && _fa "medio" "canonical" "false" "URL canónica ausente — riesgo contenido duplicado" "Implementar <link rel='canonical'> en el <head>"
+  [[ "${CT_MIXED_CONTENT:-false}" == "true" ]] && _fa "critico" "mixed_content" "true" "Mixed content — recursos HTTP en página HTTPS" "Reemplazar todas las URLs http:// por https://"
+  (( ${CT_DEPRECATED:-0} > 0 )) && _fa "medio" "deprecated_tags" "${CT_DEPRECATED}" "${CT_DEPRECATED} tags HTML deprecados" "Reemplazar por equivalentes CSS modernos"
+  local JSON_F_CT="[${_fj}]"
+
+  # Diseño findings
+  _fj=""
+  [[ "${DIS_VIEWPORT:-false}" != "true" ]] && _fa "critico" "viewport" "false" "Meta viewport ausente — no responsive en móviles" "Añadir <meta name='viewport' content='width=device-width, initial-scale=1'>"
+  [[ "${DIS_FAVICON:-false}" != "true" ]] && _fa "bajo" "favicon" "false" "Favicon ausente" "Añadir favicon.ico y variantes de alta resolución"
+  local JSON_F_DIS="[${_fj}]"
+
+  # UX findings
+  _fj=""
+  [[ "${UX_NAV:-false}" != "true" ]] && _fa "alto" "navigation" "false" "Sin elemento <nav> — navegación semántica ausente" "Estructurar el menú dentro de un elemento <nav>"
+  [[ "${UX_CTA:-false}" != "true" ]] && _fa "alto" "cta" "false" "Sin CTAs detectables — impacto directo en conversión" "Añadir botones de llamada a la acción visibles"
+  [[ "${UX_CONTACT:-false}" != "true" ]] && _fa "medio" "contact" "false" "Sin información de contacto visible" "Añadir email, teléfono o formulario en lugar visible"
+  [[ "${UX_RESPONSIVE:-false}" != "true" ]] && _fa "critico" "responsive" "false" "Sin señales de diseño responsive" "Implementar media queries y diseño adaptable"
+  local JSON_F_UX="[${_fj}]"
+
+  # Legal findings
+  _fj=""
+  [[ "${LEGAL_PRIVACY:-false}" != "true" ]] && _fa "critico" "privacy_policy" "false" "Política de privacidad ausente — riesgo GDPR Art.13" "Publicar política de privacidad accesible desde el footer"
+  [[ "${LEGAL_COOKIES:-false}" != "true" ]] && _fa "alto" "cookie_consent" "false" "Sin banner de cookies GDPR — riesgo ePrivacy" "Implementar solución de consentimiento (Cookiebot, OneTrust)"
+  [[ "${LEGAL_TERMS:-false}" != "true" ]] && _fa "medio" "terms" "false" "Términos de uso ausentes" "Publicar términos y condiciones del servicio"
+  local JSON_F_LEGAL="[${_fj}]"
+
+  # Priority matrix
+  local _pi=0 _pm=""
+  _ap() {
+    _pi=$((_pi+1))
+    local _e="{\"priority\":${_pi},\"action\":\"$(_je "${1}")\",\"impact\":${2},\"effort\":${3},\"dimension\":\"${4}\"}"
+    [[ -n "$_pm" ]] && _pm="${_pm}," || true; _pm="${_pm}${_e}"
+  }
+  [ "${SEC_HSTS:-false}"           != "true"   ] && _ap "Implementar HSTS"                4 1 "seguridad"
+  [ "${SEC_CSP:-false}"            != "true"   ] && _ap "Configurar CSP"                  4 2 "seguridad"
+  [ "${SEO_TITLE:-}"              == "AUSENTE" ] && _ap "Añadir title tag"                4 1 "seo"
+  [ "${SEC_HTTPS_REDIRECT:-false}" != "true"   ] && _ap "Forzar HTTPS redirect"           4 1 "seguridad"
+  [ "${SEO_META_DESC:-}"          == "AUSENTE" ] && _ap "Crear meta descriptions"         3 1 "seo"
+  [ "${LEGAL_COOKIES:-false}"      != "true"   ] && _ap "Banner cookies GDPR"             3 2 "legal"
+  [ "${ACC_ARIA:-false}"           != "true"   ] && _ap "Implementar ARIA labels"         3 2 "accesibilidad"
+  [ "${LEGAL_PRIVACY:-false}"      != "true"   ] && _ap "Publicar política de privacidad" 3 1 "legal"
+  [ "${SEO_SITEMAP:-}"             != "200"    ] && _ap "Generar sitemap.xml"             2 1 "seo"
+  [ "${SEO_SCHEMA:-false}"         != "true"   ] && _ap "Implementar Schema.org"          2 2 "seo"
+  [ "${DIS_FAVICON:-false}"        != "true"   ] && _ap "Agregar favicon"                 1 1 "diseno"
+  local JSON_PRIORITY_MATRIX="[${_pm}]"
+
+  # Sprint plan
+  local _s1="" _s2="" _s3=""
+  _at() {
+    local _sv="$1" _e="\"$(_je "${2}")\""
+    eval "local _c=\"\$${_sv}\""
+    [[ -n "$_c" ]] && eval "${_sv}=\"\${_c},${_e}\"" || eval "${_sv}=\"${_e}\""
+  }
+  [ "${SEC_HSTS:-false}"           != "true"   ] && _at "_s1" "Implementar HSTS en el servidor web"
+  [ "${SEC_CSP:-false}"            != "true"   ] && _at "_s1" "Configurar Content-Security-Policy"
+  [ "${SEC_XCTO:-false}"           != "true"   ] && _at "_s1" "Añadir X-Content-Type-Options: nosniff"
+  [ "${SEC_XFO:-false}"            != "true"   ] && _at "_s1" "Añadir X-Frame-Options: DENY"
+  [ "${SEC_HTTPS_REDIRECT:-false}" != "true"   ] && _at "_s1" "Forzar redirección HTTP → HTTPS"
+  echo "${PERF_COMPRESSION:-}" | grep -qi "gzip\|br\|deflate" || _at "_s1" "Activar compresión Gzip/Brotli"
+  [ "${SEO_TITLE:-}"              == "AUSENTE" ] && _at "_s1" "Añadir <title> único a todas las páginas"
+  [ "${CT_MIXED_CONTENT:-false}"  == "true"    ] && _at "_s1" "Eliminar recursos HTTP en página HTTPS"
+  [[ -z "$_s1" ]] && _at "_s1" "Mantener estándares actuales — sin críticos detectados"
+  [ "${SEO_META_DESC:-}"          == "AUSENTE" ] && _at "_s2" "Crear meta descriptions únicas (120-160 chars)"
+  [ "${SEO_ROBOTS:-}"              != "200"    ] && _at "_s2" "Crear robots.txt en la raíz del sitio"
+  [ "${SEO_SITEMAP:-}"             != "200"    ] && _at "_s2" "Generar sitemap.xml y registrar en Search Console"
+  [ "${ACC_ARIA:-false}"           != "true"   ] && _at "_s2" "Implementar atributos ARIA en componentes interactivos"
+  (( ${ACC_IMGS_NO_ALT:-0} > 0 )) && _at "_s2" "Añadir atributo alt a ${ACC_IMGS_NO_ALT} imagen(es)"
+  [ "$CYBER_SPF"   == "AUSENTE" ] && _at "_s2" "Configurar registro SPF en DNS"
+  [ "$CYBER_DMARC" == "AUSENTE" ] && _at "_s2" "Configurar registro DMARC en DNS"
+  [ "$CYBER_DKIM"  == "AUSENTE" ] && _at "_s2" "Configurar DKIM en el servidor de correo"
+  [ "${LEGAL_COOKIES:-false}"      != "true"   ] && _at "_s2" "Implementar banner de cookies GDPR"
+  [ "${LEGAL_PRIVACY:-false}"      != "true"   ] && _at "_s2" "Publicar política de privacidad"
+  [[ -z "$_s2" ]] && _at "_s2" "Revisar métricas Core Web Vitals y optimizar LCP"
+  [ "${SEO_SCHEMA:-false}"        != "true"    ] && _at "_s3" "Implementar Schema.org (structured data)"
+  [ "${CT_PWA_MANIFEST:-false}"   != "true"    ] && _at "_s3" "Crear manifest.json para soporte PWA"
+  [ "${DIS_DARK_MODE:-false}"     != "true"    ] && _at "_s3" "Implementar soporte dark mode"
+  _at "_s3" "Auditoría WCAG 2.1 AA completa con herramienta especializada"
+  _at "_s3" "Monitoreo continuo de uptime y Core Web Vitals"
+  _at "_s3" "Revisión legal de política de privacidad por asesor"
+
+  # Correction guide
+  local _cg=""
+  _acg() {
+    local _e="{\"title\":\"$(_je "${1}")\",\"severity\":\"${2}\",\"problem\":\"$(_je "${3}")\",\"fixes\":${4},\"estimated_time\":\"$(_je "${5}")\",\"score_impact\":\"$(_je "${6}")\"}"
+    [[ -n "$_cg" ]] && _cg="${_cg}," || true; _cg="${_cg}${_e}"
+  }
+  [[ "${SEC_HSTS:-false}" != "true" ]] && _acg \
+    "HSTS ausente" "critico" \
+    "Un atacante puede interceptar la conexión HTTP inicial antes del redirect a HTTPS (MITM)." \
+    '[{"label":"nginx","code":"add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains; preload\" always;"},{"label":"Apache","code":"Header always set Strict-Transport-Security \"max-age=31536000; includeSubDomains; preload\""}]' \
+    "< 30 minutos" "+20 pts Seguridad"
+  [[ "${SEC_CSP:-false}" != "true" ]] && _acg \
+    "Content-Security-Policy ausente" "critico" \
+    "El navegador ejecuta cualquier script sin restricciones, incluyendo inyecciones XSS." \
+    '[{"label":"Header","code":"Content-Security-Policy: default-src '\''self'\''; script-src '\''self'\''; img-src '\''self'\'' data: https:;"}]' \
+    "1-2 horas" "+20 pts Seguridad"
+  [[ "${SEO_TITLE:-}" == "AUSENTE" ]] && _acg \
+    "Title tag ausente" "critico" \
+    "Google no puede identificar el tema de la página. CTR orgánico cercano a cero." \
+    '[{"label":"HTML","code":"<head><title>Nombre de Página | Nombre de Marca</title></head>"}]' \
+    "< 1 hora" "+25 pts SEO"
+  [[ "${CT_MIXED_CONTENT:-false}" == "true" ]] && _acg \
+    "Mixed content detectado" "critico" \
+    "Los navegadores modernos bloquean recursos HTTP en páginas HTTPS." \
+    '[{"label":"bash","code":"grep -rn '\''src=\"http://'\'' ./ && grep -rn '\''href=\"http://'\'' ./"}]' \
+    "1-4 horas" "+15 pts Calidad Técnica"
+  (( ${ACC_IMGS_NO_ALT:-0} > 0 )) && _acg \
+    "${ACC_IMGS_NO_ALT} imagen(es) sin atributo alt" "alto" \
+    "Usuarios con discapacidad visual quedan excluidos. Penaliza el SEO." \
+    '[{"label":"HTML","code":"<img src=\"producto.jpg\" alt=\"Descripción concisa del contenido\">"}]' \
+    "30-60 min" "+5 pts Accesibilidad por imagen"
+  [[ "$CYBER_SPF" == "AUSENTE" || "$CYBER_DMARC" == "AUSENTE" || "$CYBER_DKIM" == "AUSENTE" ]] && _acg \
+    "Autenticación de email incompleta" "alto" \
+    "Cualquier persona puede enviar emails haciéndose pasar por el dominio." \
+    "[{\"label\":\"SPF\",\"code\":\"${domain}.  TXT  \\\"v=spf1 include:_spf.google.com ~all\\\"\"},{\"label\":\"DMARC\",\"code\":\"_dmarc.${domain}.  TXT  \\\"v=DMARC1; p=quarantine; rua=mailto:dmarc@${domain}\\\"\"},{\"label\":\"DKIM\",\"code\":\"default._domainkey.${domain}.  TXT  \\\"v=DKIM1; k=rsa; p=clave_publica\\\"\"}]" \
+    "1-2 horas" "Protección contra suplantación"
+  local JSON_CORRECTION_GUIDE="[${_cg}]"
+
+  # Perspectives
+  local persp_ux persp_seo persp_devops persp_legal persp_cro persp_product
+  persp_ux="$([ "${UX_NAV:-false}" == "true" ] && echo "Navegación estructurada presente." || echo "Falta navegación semántica.") $([ "${UX_CTA:-false}" == "true" ] && echo "CTAs detectables." || echo "CTAs no definidos — impacto directo en conversión.") Recomiendo pruebas con usuarios reales y mapas de calor."
+  persp_seo="$([ "${SEO_TITLE:-}" != "AUSENTE" ] && echo "Base técnica de metadatos adecuada." || echo "Requiere trabajo fundamental en metadatos.") $([ "${SEO_SCHEMA:-false}" == "true" ] && echo "Structured data positivo para rich snippets." || echo "Sin Schema.org — visibilidad en Google limitada.")"
+  persp_devops="Headers de seguridad: $( (( ${SCORE_SEGURIDAD:-0} >= 70 )) && echo "aceptables" || echo "críticos"). Hosting en ${SEC_HOST_PROVIDER:-desconocido} (${SEC_HOST_COUNTRY:-?}). $([ "${SEC_HSTS:-false}" == "true" ] && echo "HSTS configurado." || echo "HSTS ausente — vulnerabilidad MITM.")"
+  persp_legal="$([ "${LEGAL_PRIVACY:-false}" == "true" ] && echo "Política de privacidad detectada." || echo "Sin política de privacidad — riesgo GDPR.") Trackers: ${LEGAL_TRACKERS[*]:-ninguno}. Verificar consentimiento explícito (GDPR Art. 6)."
+  persp_cro="$([ "${UX_CTA:-false}" == "true" ] && echo "CTAs presentes." || echo "Sin CTAs claros — pérdida de conversión directa.") Priorizar A/B testing en páginas de alto tráfico."
+  persp_product="Score ${SCORE_GLOBAL:-0}/100 — $( (( ${SCORE_GLOBAL:-0} >= 80 )) && echo "producto en buen estado." || (( ${SCORE_GLOBAL:-0} >= 60 )) && echo "deuda técnica acumulada, requiere roadmap de mejora." || echo "deuda técnica crítica, sprint de emergencia recomendado.") OKRs sugeridos: performance, seguridad y UX."
+
+  # Narrative
+  local exec_summary conclusion
+  if   (( ${SCORE_GLOBAL:-0} >= 80 )); then exec_summary="El sitio ${domain} presenta un estado satisfactorio. Se recomienda priorizar las acciones de alto impacto antes del próximo ciclo de revisión."
+  elif (( ${SCORE_GLOBAL:-0} >= 60 )); then exec_summary="El sitio ${domain} presenta un estado aceptable con áreas de mejora importantes. Existen brechas que pueden impactar conversión, posicionamiento y seguridad."
+  else                                       exec_summary="El sitio ${domain} presenta deficiencias significativas que requieren atención inmediata con impacto directo en negocio, reputación y cumplimiento legal."
+  fi
+  local _bd="" _bs=0 _wd="" _ws=101
+  for _pair in performance:${SCORE_PERFORMANCE:-0} seo:${SCORE_SEO:-0} accesibilidad:${SCORE_ACCESIBILIDAD:-0} seguridad:${SCORE_SEGURIDAD:-0} ciberseguridad:${SCORE_CIBERSEGURIDAD:-0} calidad_tecnica:${SCORE_CALIDAD_TECNICA:-0} diseno:${SCORE_DISENO:-0} ux:${SCORE_UX:-0}; do
+    local _pd="${_pair%%:*}" _pv="${_pair##*:}"
+    (( _pv > _bs )) && _bs=$_pv && _bd=$_pd
+    (( _pv < _ws )) && _ws=$_pv && _wd=$_pd
+  done
+  if   (( ${SCORE_GLOBAL:-0} >= 80 )); then local _estado="sólido"
+  elif (( ${SCORE_GLOBAL:-0} >= 60 )); then local _estado="aceptable con oportunidades claras de mejora"
+  else                                       local _estado="con brechas importantes que requieren atención prioritaria"
+  fi
+  conclusion="De acuerdo al análisis de Homium, ${domain} obtuvo ${SCORE_GLOBAL:-0}/100 — sitio ${_estado}. Dimensión más fuerte: ${_bd//_/ } (${_bs}/100). Mayor oportunidad: ${_wd//_/ } (${_ws}/100)."
+
+  # Evolution deltas
+  local ev_prev="null" ev_g="null" ev_p="null" ev_s="null" ev_a="null"
+  local ev_sec="null" ev_cy="null" ev_ct="null" ev_d="null" ev_u="null"
+  if [[ -n "${PREV_REPORT:-}" && -f "$PREV_REPORT" ]]; then
+    ev_prev="\"$(_je "$(basename "$PREV_REPORT")")\""
+    local _pg; _pg=$(grep "Score Global" "$PREV_REPORT" 2>/dev/null | perl -nle 'print $1 if /([0-9]+) \/ 100/' | head -1 || echo "")
+    [[ -n "$_pg" ]] && ev_g=$(( ${SCORE_GLOBAL:-0} - _pg )) || true
+    local _pp; _pp=$(extract_prev_score "$PREV_REPORT" "Performance"); [[ "$_pp" != "N/A" && -n "$_pp" ]] && ev_p=$(( ${SCORE_PERFORMANCE:-0} - _pp )) || true
+    local _ps; _ps=$(extract_prev_score "$PREV_REPORT" "SEO"); [[ "$_ps" != "N/A" && -n "$_ps" ]] && ev_s=$(( ${SCORE_SEO:-0} - _ps )) || true
+    local _pa; _pa=$(extract_prev_score "$PREV_REPORT" "Accesibilidad"); [[ "$_pa" != "N/A" && -n "$_pa" ]] && ev_a=$(( ${SCORE_ACCESIBILIDAD:-0} - _pa )) || true
+    local _psec; _psec=$(extract_prev_score "$PREV_REPORT" "Seguridad"); [[ "$_psec" != "N/A" && -n "$_psec" ]] && ev_sec=$(( ${SCORE_SEGURIDAD:-0} - _psec )) || true
+    local _pcy; _pcy=$(extract_prev_score "$PREV_REPORT" "Ciberseguridad"); [[ "$_pcy" != "N/A" && -n "$_pcy" ]] && ev_cy=$(( ${SCORE_CIBERSEGURIDAD:-0} - _pcy )) || true
+    local _pct; _pct=$(extract_prev_score "$PREV_REPORT" "Calidad"); [[ "$_pct" != "N/A" && -n "$_pct" ]] && ev_ct=$(( ${SCORE_CALIDAD_TECNICA:-0} - _pct )) || true
+    local _pdis; _pdis=$(extract_prev_score "$PREV_REPORT" "Diseño"); [[ "$_pdis" != "N/A" && -n "$_pdis" ]] && ev_d=$(( ${SCORE_DISENO:-0} - _pdis )) || true
+    local _pu; _pu=$(extract_prev_score "$PREV_REPORT" "UX"); [[ "$_pu" != "N/A" && -n "$_pu" ]] && ev_u=$(( ${SCORE_UX:-0} - _pu )) || true
+  fi
+
+  cat > "$out_file" << JSONEOF
+{
+  "meta": {
+    "schema_version": "1.0",
+    "tool_version": "$(_je "$SCRIPT_VERSION")",
+    "url": "$(_je "$URL")",
+    "domain": "$(_je "$domain")",
+    "timestamp": "$(_je "$iso_ts")",
+    "sector": "$(_je "${SECTOR:-general}")",
+    "dimensions_run": ${json_dimensions_run},
+    "tools_available": {
+      "lighthouse": $(_jb "${LH_DONE_MOBILE:-false}"),
+      "axe": $([[ -n "${AXE_CMD:-}" ]] && echo "true" || echo "false"),
+      "pa11y": $([[ -n "${PA11Y_CMD:-}" ]] && echo "true" || echo "false"),
+      "htmlhint": $([[ -n "${HTMLHINT_CMD:-}" ]] && echo "true" || echo "false"),
+      "webanalyze": $(command -v webanalyze &>/dev/null && echo "true" || echo "false"),
+      "ssl_checker": $([[ -n "${SSLCHECK_CMD:-}" ]] && echo "true" || echo "false")
+    }
+  },
+  "scores": {
+    "global": ${SCORE_GLOBAL:-0},
+    "performance": ${SCORE_PERFORMANCE:-0},
+    "seo": ${SCORE_SEO:-0},
+    "accesibilidad": ${SCORE_ACCESIBILIDAD:-0},
+    "seguridad": ${SCORE_SEGURIDAD:-0},
+    "ciberseguridad": ${SCORE_CIBERSEGURIDAD:-0},
+    "calidad_tecnica": ${SCORE_CALIDAD_TECNICA:-0},
+    "diseno": ${SCORE_DISENO:-0},
+    "ux": ${SCORE_UX:-0},
+    "email_deliverability": ${email_score}
+  },
+  "benchmarks": {
+    "sector": "$(_je "${SECTOR:-general}")",
+    "average": { "performance": ${bp}, "seo": ${bs}, "accesibilidad": ${ba}, "seguridad": ${bsec}, "ciberseguridad": ${bcy}, "calidad_tecnica": ${bct}, "diseno": ${bd}, "ux": ${bu} },
+    "top":     { "performance": ${tp}, "seo": ${ts}, "accesibilidad": ${ta}, "seguridad": ${tsec}, "ciberseguridad": ${tcy}, "calidad_tecnica": ${tct}, "diseno": ${td}, "ux": ${tu} }
+  },
+  "performance": {
+    "response_ms": ${PERF_RESP_MS:-0},
+    "ttfb_ms": ${PERF_TTFB_MS:-0},
+    "size_kb": ${PERF_SIZE_KB:-0},
+    "protocol": "$(_je "${PERF_PROTOCOL:-}")",
+    "compression": "$(_je "${PERF_COMPRESSION:-}")",
+    "redirects": ${PERF_REDIRECTS:-0},
+    "cdn": "$(_je "${PERF_CDN:-No detectado}")",
+    "resources": { "js": ${PERF_JS_COUNT:-0}, "css": ${PERF_CSS_COUNT:-0}, "images": ${PERF_IMG_COUNT:-0}, "fonts": null, "third_party_domains": null, "webp_avif_usage": null, "lazy_loading_count": null, "srcset_usage": null },
+    "lighthouse": {
+      "mobile":  { "score": ${PERF_LH_MOBILE:-null},  "lcp": $(_lhnum "largest-contentful-paint" "mobile"),  "fcp": $(_lhnum "first-contentful-paint" "mobile"),  "tbt": $(_lhnum "total-blocking-time" "mobile"),  "cls": $(_lhnum "cumulative-layout-shift" "mobile"),  "speed_index": $(_lhnum "speed-index" "mobile")  },
+      "desktop": { "score": ${PERF_LH_DESKTOP:-null}, "lcp": $(_lhnum "largest-contentful-paint" "desktop"), "fcp": $(_lhnum "first-contentful-paint" "desktop"), "tbt": $(_lhnum "total-blocking-time" "desktop"), "cls": $(_lhnum "cumulative-layout-shift" "desktop"), "speed_index": $(_lhnum "speed-index" "desktop") }
+    }
+  },
+  "seo": {
+    "title": "$(_je "${SEO_TITLE:-}")",
+    "title_length": ${SEO_TITLE_LEN:-0},
+    "meta_description": "$(_je "${SEO_META_DESC:-}")",
+    "meta_description_length": ${SEO_META_DESC_LEN:-0},
+    "meta_robots": "$(_je "${SEO_META_ROBOTS:-No definido}")",
+    "h1_count": ${SEO_H1_COUNT:-0}, "h2_count": ${SEO_H2_COUNT:-0}, "h3_count": ${SEO_H3_COUNT:-0},
+    "og_tags": $(_jb "${SEO_OG:-false}"),
+    "og_image": "$(_je "${SITE_OG_IMAGE:-}")",
+    "twitter_card": $(_jb "${SEO_TWITTER_CARD:-false}"),
+    "schema_org": $(_jb "${SEO_SCHEMA:-false}"),
+    "schema_types": ${json_schema_types},
+    "hreflang": $(_jb "${SEO_HREFLANG:-false}"),
+    "robots_txt": ${SEO_ROBOTS:-0}, "sitemap_xml": ${SEO_SITEMAP:-0},
+    "internal_links": ${SEO_INT_LINKS:-0}, "external_links": ${SEO_EXT_LINKS:-0},
+    "favicon": "$(_je "${SITE_FAVICON:-}")",
+    "word_count": null, "last_modified": null,
+    "lighthouse": { "mobile": ${SEO_LH_MOBILE:-null}, "desktop": ${SEO_LH_DESKTOP:-null} }
+  },
+  "accesibilidad": {
+    "images_total": ${ACC_IMGS_TOTAL:-0}, "images_without_alt": ${ACC_IMGS_NO_ALT:-0},
+    "aria_present": $(_jb "${ACC_ARIA:-false}"), "skip_navigation": $(_jb "${ACC_SKIP:-false}"),
+    "forms_count": ${ACC_FORMS:-0}, "labels_count": ${ACC_LABELS:-0},
+    "lang_attribute": $(_jb "${CT_LANG:-false}"),
+    "axe":   { "violations": ${ACC_AXE_VIOLATIONS:-0}, "serious": ${ACC_AXE_SERIOUS:-0} },
+    "pa11y": { "errors": ${ACC_PA11Y_ERRORS:-0}, "warnings": ${ACC_PA11Y_WARNINGS:-0} },
+    "lighthouse": { "mobile": ${ACC_LH_MOBILE:-null}, "desktop": ${ACC_LH_DESKTOP:-null} }
+  },
+  "seguridad": {
+    "headers": {
+      "hsts": $(_jb "${SEC_HSTS:-false}"), "hsts_max_age": ${hsts_maxage},
+      "csp": $(_jb "${SEC_CSP:-false}"), "csp_unsafe_inline": $(_jb "${SEC_CSP_UNSAFE:-false}"),
+      "x_content_type_options": $(_jb "${SEC_XCTO:-false}"), "x_frame_options": $(_jb "${SEC_XFO:-false}"),
+      "referrer_policy": $(_jb "${SEC_RP:-false}"), "permissions_policy": $(_jb "${SEC_PER:-false}"),
+      "sri": $(_jb "${SEC_SRI:-false}")
+    },
+    "https_redirect": $(_jb "${SEC_HTTPS_REDIRECT:-false}"),
+    "ssl": {
+      "days_remaining": ${ssl_days}, "expiry_note": "$(_je "${SEC_SSL_EXPIRY_NOTE:-}")",
+      "issuer": "$(_je "${SSL_ISSUER:-Desconocido}")", "tls_version": "$(_je "${SSL_PROTOCOL:-Desconocido}")",
+      "cipher": "$(_je "${SSL_CIPHER:-Desconocido}")", "san": ${json_san}
+    },
+    "cookies": { "secure": $(_jb "${SEC_COOKIE_SECURE:-false}"), "httponly": $(_jb "${SEC_COOKIE_HTTPONLY:-false}") },
+    "caa_record": "$(_je "${SEC_CAA:-AUSENTE}")", "mx_record": "$(_je "${SEC_MX:-AUSENTE}")"
+  },
+  "ciberseguridad": {
+    "server_header": "$(_je "${CYBER_SERVER:-Oculto}")", "powered_by": "$(_je "${CYBER_POWERED_BY:-Oculto}")",
+    "exposed_paths": ${json_exposed_paths},
+    "security_txt": ${CYBER_SEC_TXT:-0}, "security_txt_contact": "$(_je "${CYBER_SEC_TXT_CONTACT:-}")",
+    "spf": "$(_je "${CYBER_SPF:-AUSENTE}")", "dmarc": "$(_je "${CYBER_DMARC:-AUSENTE}")",
+    "dkim": "$(_je "${CYBER_DKIM:-AUSENTE}")", "bimi": "$(_je "${CYBER_BIMI:-AUSENTE}")",
+    "source_maps_exposed": null, "dev_tools_active": null
+  },
+  "calidad_tecnica": {
+    "doctype": $(_jb "${CT_DOCTYPE:-false}"), "lang_attribute": $(_jb "${CT_LANG:-false}"),
+    "charset": $(_jb "${CT_CHARSET:-false}"), "viewport": $(_jb "${CT_VIEWPORT:-false}"),
+    "title_tag": $(_jb "${CT_TITLE:-false}"), "canonical": $(_jb "${CT_CANONICAL:-false}"),
+    "inline_scripts": ${CT_INLINE_SCRIPTS:-0}, "inline_styles": ${CT_INLINE_STYLES:-0},
+    "deprecated_tags": ${CT_DEPRECATED:-0}, "mixed_content": $(_jb "${CT_MIXED_CONTENT:-false}"),
+    "pwa_manifest": $(_jb "${CT_PWA_MANIFEST:-false}"), "service_worker": $(_jb "${CT_SERVICE_WORKER:-false}"),
+    "htmlhint": { "errors": ${CT_HTMLHINT_ERRORS:-0}, "warnings": ${CT_HTMLHINT_WARNINGS:-0} }
+  },
+  "diseno": {
+    "viewport": $(_jb "${DIS_VIEWPORT:-false}"), "css_frameworks": ${json_css_frameworks},
+    "web_fonts": $(_jb "${DIS_FONTS:-false}"), "favicon": $(_jb "${DIS_FAVICON:-false}"),
+    "favicon_hires": $(_jb "${DIS_FAVICON_HI:-false}"), "dark_mode": $(_jb "${DIS_DARK_MODE:-false}"),
+    "print_css": $(_jb "${DIS_PRINT_CSS:-false}"), "breakpoints_count": ${DIS_BREAKPOINTS:-0},
+    "lighthouse": { "mobile": ${DIS_LH_MOBILE:-null}, "desktop": ${DIS_LH_DESKTOP:-null} }
+  },
+  "ux": {
+    "navigation": $(_jb "${UX_NAV:-false}"), "search": $(_jb "${UX_SEARCH:-false}"),
+    "contact": $(_jb "${UX_CONTACT:-false}"), "cta": $(_jb "${UX_CTA:-false}"),
+    "responsive": $(_jb "${UX_RESPONSIVE:-false}"), "loading_states": $(_jb "${UX_LOADING:-false}"),
+    "breadcrumbs": $(_jb "${UX_BREADCRUMBS:-false}"), "social_links": $(_jb "${UX_SOCIAL:-false}"),
+    "chat_widget": $(_jb "${UX_CHAT:-false}"), "form_validation": $(_jb "${UX_FORM_VALIDATION:-false}"),
+    "language_switcher": $(_jb "${UX_LANG_SWITCH:-false}"),
+    "page_404": ${UX_404:-0}, "page_500": ${UX_500:-0},
+    "video_present": null, "newsletter_signup": null
+  },
+  "legal": {
+    "privacy_policy": $(_jb "${LEGAL_PRIVACY:-false}"), "terms": $(_jb "${LEGAL_TERMS:-false}"),
+    "cookie_consent": $(_jb "${LEGAL_COOKIES:-false}"), "gdpr_mentions": $(_jb "${LEGAL_GDPR:-false}"),
+    "trackers": ${json_trackers}
+  },
+  "tecnologia": {
+    "cms": "$(_je "${TECH_CMS:-Desconocido}")", "framework": "$(_je "${TECH_FRAMEWORK:-Desconocido}")",
+    "language": "$(_je "${TECH_LANGUAGE:-Desconocido}")", "server": "$(_je "${TECH_SERVER:-Oculto}")",
+    "cdn": "$(_je "${TECH_CDN:-No detectado}")", "analytics": ${json_analytics},
+    "error_tracking": null, "ab_testing": null, "ad_scripts": null,
+    "webanalyze_raw": ${json_webanalyze}
+  },
+  "email_deliverability": {
+    "spf": ${spf_bool}, "dmarc": ${dmarc_bool}, "dkim": ${dkim_bool},
+    "mx": ${mx_bool}, "bimi": ${bimi_bool}, "score": ${email_score}
+  },
+  "hosting": {
+    "ip": "$(_je "${SEC_HOST_IP:-}")", "country": "$(_je "${SEC_HOST_COUNTRY:-Desconocido}")",
+    "city": "$(_je "${SEC_HOST_CITY:-Desconocido}")", "org": "$(_je "${SEC_HOST_ORG:-Desconocido}")",
+    "asn": "$(_je "${SEC_HOST_ASN:-Desconocido}")", "abuse_contact": "$(_je "${SEC_HOST_ABUSE:-Desconocido}")",
+    "ipv6": null
+  },
+  "dominio": {
+    "registrar": "$(_je "${SEC_DOM_REGISTRAR:-Desconocido}")",
+    "created": "$(_je "${SEC_DOM_CREATED:-}")", "expires": "$(_je "${SEC_DOM_EXPIRES:-}")",
+    "updated": "$(_je "${SEC_DOM_UPDATED:-}")", "nameservers": ${json_nameservers},
+    "dnssec": $(_jb "${SEC_DOM_DNSSEC:-false}"), "status": "$(_je "${SEC_DOM_STATUS:-Desconocido}")",
+    "whois_privacy": $(_jb "${SEC_DOM_PRIVACY:-false}"), "abuse_email": "$(_je "${SEC_DOM_ABUSE_EMAIL:-Desconocido}")"
+  },
+  "screenshots": { "mobile": ${json_ss_mobile}, "desktop": ${json_ss_desktop} },
+  "findings": {
+    "performance": ${JSON_F_PERF}, "seo": ${JSON_F_SEO}, "accesibilidad": ${JSON_F_ACC},
+    "seguridad": ${JSON_F_SEC}, "ciberseguridad": ${JSON_F_CYBER}, "calidad_tecnica": ${JSON_F_CT},
+    "diseno": ${JSON_F_DIS}, "ux": ${JSON_F_UX}, "legal": ${JSON_F_LEGAL}
+  },
+  "priority_matrix": ${JSON_PRIORITY_MATRIX},
+  "expected_impact": [
+    { "action": "HSTS + CSP + Headers",  "kpi": "Seguridad",            "improvement": "+15-20 pts", "timeline": "< 1 semana" },
+    { "action": "Meta tags SEO",          "kpi": "CTR orgánico",         "improvement": "+10-30%",    "timeline": "4-8 semanas" },
+    { "action": "Compresión Gzip/Brotli", "kpi": "Velocidad",            "improvement": "-30-50%",    "timeline": "< 1 día" },
+    { "action": "Schema.org",            "kpi": "Rich snippets",         "improvement": "+20% CTR",   "timeline": "2-4 semanas" },
+    { "action": "ARIA + Accesibilidad",   "kpi": "Alcance + Compliance", "improvement": "+5-15 pts",  "timeline": "2-6 semanas" },
+    { "action": "Banner cookies",         "kpi": "Riesgo legal",         "improvement": "Reducción riesgo GDPR", "timeline": "1-2 semanas" }
+  ],
+  "sprint_plan": { "sprint_1": [${_s1}], "sprint_2": [${_s2}], "sprint_3": [${_s3}] },
+  "correction_guide": ${JSON_CORRECTION_GUIDE},
+  "perspectives": {
+    "ux":      "$(_je "$persp_ux")",
+    "seo":     "$(_je "$persp_seo")",
+    "devops":  "$(_je "$persp_devops")",
+    "legal":   "$(_je "$persp_legal")",
+    "cro":     "$(_je "$persp_cro")",
+    "product": "$(_je "$persp_product")"
+  },
+  "narrative": {
+    "executive_summary": "$(_je "$exec_summary")",
+    "conclusion": "$(_je "$conclusion")",
+    "source": "script"
+  },
+  "evolution": {
+    "previous_report": ${ev_prev},
+    "deltas": {
+      "global": ${ev_g}, "performance": ${ev_p}, "seo": ${ev_s}, "accesibilidad": ${ev_a},
+      "seguridad": ${ev_sec}, "ciberseguridad": ${ev_cy}, "calidad_tecnica": ${ev_ct},
+      "diseno": ${ev_d}, "ux": ${ev_u}
+    }
+  }
+}
+JSONEOF
+}
+
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 main() {
   echo -e "\n${BOLD}${CYAN}╔══════════════════════════════════════════════╗${RESET}"
@@ -1946,6 +2477,9 @@ main() {
   step "Generando reporte"
   generate_report "$OUT_FILE" "${PREV_REPORT:-}"
   ok "Reporte guardado: ${BOLD}${OUT_FILE}${RESET}"
+  local JSON_FILE="${OUT_FILE%.md}.json"
+  generate_json "$JSON_FILE"
+  ok "JSON guardado: ${BOLD}${JSON_FILE}${RESET}"
 
   if [[ -n "${THRESHOLD:-}" ]]; then
     if (( SCORE_GLOBAL < THRESHOLD )); then
