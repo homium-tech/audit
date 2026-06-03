@@ -548,6 +548,19 @@ analyze_performance() {
   PERF_CSS_COUNT=$(echo "$HTML_CACHE" | grep -ic 'href="[^"]*\.css' 2>/dev/null | tr -d '[:space:]') || PERF_CSS_COUNT=0
   PERF_IMG_COUNT=$(echo "$HTML_CACHE" | grep -ic '<img' 2>/dev/null | tr -d '[:space:]') || PERF_IMG_COUNT=0
   PERF_JS_COUNT=${PERF_JS_COUNT:-0}; PERF_CSS_COUNT=${PERF_CSS_COUNT:-0}; PERF_IMG_COUNT=${PERF_IMG_COUNT:-0}
+  PERF_LAZY_COUNT=$(echo "$HTML_CACHE" | grep -ic 'loading="lazy"' 2>/dev/null | tr -d '[:space:]') || PERF_LAZY_COUNT=0
+  PERF_SRCSET_COUNT=$(echo "$HTML_CACHE" | grep -ic 'srcset=' 2>/dev/null | tr -d '[:space:]') || PERF_SRCSET_COUNT=0
+  PERF_WEBP_COUNT=$(echo "$HTML_CACHE" | grep -ciE '\.(webp|avif)"' 2>/dev/null | tr -d '[:space:]') || PERF_WEBP_COUNT=0
+  PERF_FONTS_COUNT=$(echo "$HTML_CACHE" | grep -ciE '\.(woff2?|ttf|otf)"' 2>/dev/null | tr -d '[:space:]') || PERF_FONTS_COUNT=0
+  PERF_LAZY_COUNT=${PERF_LAZY_COUNT:-0}; PERF_SRCSET_COUNT=${PERF_SRCSET_COUNT:-0}
+  PERF_WEBP_COUNT=${PERF_WEBP_COUNT:-0}; PERF_FONTS_COUNT=${PERF_FONTS_COUNT:-0}
+  PERF_THIRD_PARTY_DOMAINS=()
+  local _tp_domain="${URL#*://}"; _tp_domain="${_tp_domain%%/*}"
+  while IFS= read -r _tp; do
+    _tp=$(echo "$_tp" | xargs 2>/dev/null || echo "")
+    [[ -z "$_tp" || "$_tp" == *"$_tp_domain"* ]] && continue
+    PERF_THIRD_PARTY_DOMAINS+=("$_tp")
+  done <<< "$(echo "$HTML_CACHE" | grep -oiE 'src="https?://[a-zA-Z0-9.-]+' | grep -oiE 'https?://[a-zA-Z0-9.-]+' | sort -u 2>/dev/null || echo "")"
   (( PERF_JS_COUNT > 20  )) && score=$((score-5)) || true
   (( PERF_CSS_COUNT > 10 )) && score=$((score-5)) || true
 
@@ -689,6 +702,9 @@ analyze_seo() {
   int_links=$(echo "$html" | grep -oiE 'href="/' | wc -l | tr -d '[:space:]') || int_links=0
   ext_links=$(echo "$html"  | grep -oiE 'href="http' | wc -l | tr -d '[:space:]') || ext_links=0
   SEO_INT_LINKS=${int_links:-0}; SEO_EXT_LINKS=${ext_links:-0}
+  SEO_WORD_COUNT=$(echo "$html" | sed 's/<[^>]*>//g' | tr -s '[:space:]' '\n' | grep -cE '[a-zA-ZáéíóúñÁÉÍÓÚÑ]{2,}' 2>/dev/null) || SEO_WORD_COUNT=0
+  SEO_WORD_COUNT=${SEO_WORD_COUNT:-0}
+  SEO_LAST_MODIFIED=$(curl -sI --max-time "$TIMEOUT" "$URL" 2>/dev/null | grep -i "^last-modified:" | sed 's/[Ll]ast-[Mm]odified:[[:space:]]*//' | xargs 2>/dev/null || echo "")
 
   local base="${URL%/}"
   SEO_ROBOTS=$(http_status "${base}/robots.txt")
@@ -793,6 +809,15 @@ analyze_seguridad() {
 
   # Hosting & dominio
   lookup_hosting_domain "$domain"
+
+  # IPv6
+  SEC_HOST_IPV6=""
+  if command -v dig &>/dev/null; then
+    SEC_HOST_IPV6=$(dig AAAA "$domain" +short 2>/dev/null | grep -v '^$' | head -1 || echo "")
+  else
+    SEC_HOST_IPV6=$(curl -sSL --max-time 8 "https://dns.google/resolve?name=${domain}&type=AAAA" 2>/dev/null \
+      | perl -nle 'print $1 if /"data":"([^"]+)"/' | head -1 || echo "")
+  fi
 
   # Headers
   local headers
@@ -945,6 +970,10 @@ analyze_ciberseguridad() {
   [[ "$CYBER_DMARC" == "AUSENTE" ]] && score=$((score-10)) || true
   [[ "$CYBER_DKIM"  == "AUSENTE" ]] && score=$((score-5))  || true
 
+  CYBER_SOURCE_MAPS=false
+  echo "$HTML_CACHE" | grep -qiE '\.map"|sourceMappingURL' && CYBER_SOURCE_MAPS=true || true
+  [[ "$CYBER_SOURCE_MAPS" == true ]] && score=$((score-10)) || true
+
   (( score < 0 )) && score=0; (( score > 100 )) && score=100
   set_score "ciberseguridad" "$score"; SCORE_CIBERSEGURIDAD=$score
   ok "Ciberseguridad score: $(score_color $score)"
@@ -1048,6 +1077,23 @@ analyze_tecnologia() {
     [[ -n "$TECH_WEBANALYZE" ]] && ok "webanalyze completado" || true
   fi
 
+  TECH_ERROR_TRACKING="Ninguno detectado"
+  grep -qi 'sentry\.io\|@sentry\|Sentry\.init' <<< "$html" && TECH_ERROR_TRACKING="Sentry" || true
+  grep -qi 'bugsnag' <<< "$html"                            && TECH_ERROR_TRACKING="Bugsnag" || true
+  grep -qi 'rollbar' <<< "$html"                            && TECH_ERROR_TRACKING="Rollbar" || true
+  grep -qi 'datadog-rum\|datadogrum' <<< "$html"            && TECH_ERROR_TRACKING="Datadog RUM" || true
+
+  TECH_AB_TESTING="Ninguno detectado"
+  grep -qi 'optimizely' <<< "$html"                         && TECH_AB_TESTING="Optimizely" || true
+  grep -qi 'google-optimize\|googleoptimize' <<< "$html"    && TECH_AB_TESTING="Google Optimize" || true
+  grep -qi 'vwo\.com\|_vwo_code' <<< "$html"                && TECH_AB_TESTING="VWO" || true
+  grep -qi 'convert\.com\|convertexperiences' <<< "$html"   && TECH_AB_TESTING="Convert" || true
+
+  TECH_AD_SCRIPTS="Ninguno detectado"
+  grep -qi 'googleadservices\|googlesyndication\|adsbygoogle' <<< "$html" && TECH_AD_SCRIPTS="Google Ads" || true
+  grep -qi 'doubleclick\.net' <<< "$html"                   && TECH_AD_SCRIPTS="DoubleClick" || true
+  grep -qi 'amazon-adsystem' <<< "$html"                    && TECH_AD_SCRIPTS="Amazon Ads" || true
+
   ok "Stack tecnológico detectado"
 }
 
@@ -1079,6 +1125,8 @@ analyze_ux() {
   UX_CHAT=false;        grep -qi 'intercom\|drift\|zendesk\|crisp\|tidio\|freshchat' <<< "$html" && UX_CHAT=true || true
   UX_FORM_VALIDATION=false; grep -qi 'required\|pattern=\|minlength=' <<< "$html" && UX_FORM_VALIDATION=true || true
   UX_LANG_SWITCH=false; grep -qi 'lang-switch\|language-selector\|idioma\|hreflang' <<< "$html" && UX_LANG_SWITCH=true || true
+  UX_VIDEO=false;      grep -qiE '<video|youtube\.com/embed|vimeo\.com' <<< "$html" && UX_VIDEO=true      || true
+  UX_NEWSLETTER=false; grep -qiE 'newsletter|suscri[bp]|subscribe' <<< "$html"       && UX_NEWSLETTER=true || true
 
   (( score < 0 )) && score=0; (( score > 100 )) && score=100
   set_score "ux" "$score"; SCORE_UX=$score
@@ -1139,6 +1187,107 @@ score_delta() {
   if   (( diff > 0 )); then echo "+${diff} 🟢"
   elif (( diff < 0 )); then echo "${diff} 🔴"
   else echo "= 🟡"
+  fi
+}
+
+# ─── Dimension contexts ───────────────────────────────────────────────────────
+compute_dimension_contexts() {
+  # Performance
+  local p_issues=""
+  (( ${PERF_RESP_MS:-0} > 800 )) && p_issues="${p_issues}Tiempo de respuesta de ${PERF_RESP_MS}ms. "
+  [[ "${PERF_CDN:-No detectado}" == "No detectado" ]] && p_issues="${p_issues}Sin CDN. "
+  echo "${PERF_COMPRESSION:-}" | grep -qi "gzip\|br\|deflate" || p_issues="${p_issues}Sin compresión. "
+  (( ${PERF_WEBP_COUNT:-0} == 0 )) && p_issues="${p_issues}Sin imágenes WebP/AVIF. "
+  (( ${PERF_LAZY_COUNT:-0} == 0 && ${PERF_IMG_COUNT:-0} > 3 )) && p_issues="${p_issues}Sin lazy loading. "
+  if   (( ${SCORE_PERFORMANCE:-0} >= 85 )); then CTX_PERFORMANCE="Por encima del promedio del sector. ${p_issues:-Sin problemas críticos.}"
+  elif (( ${SCORE_PERFORMANCE:-0} >= 70 )); then CTX_PERFORMANCE="Rendimiento aceptable, con margen de mejora. ${p_issues}"
+  else                                           CTX_PERFORMANCE="Rendimiento bajo — impacto directo en conversiones. ${p_issues}"
+  fi
+
+  # SEO
+  local s_issues=""
+  [[ "${SEO_TITLE:-}" == "AUSENTE" ]]       && s_issues="${s_issues}Sin title tag. "
+  [[ "${SEO_META_DESC:-}" == "AUSENTE" ]]   && s_issues="${s_issues}Sin meta description. "
+  [[ "${SEO_SCHEMA:-false}" != "true" ]]    && s_issues="${s_issues}Sin Schema.org. "
+  [[ "${SEO_SITEMAP:-}" != "200" ]]         && s_issues="${s_issues}Sin sitemap.xml. "
+  [[ "${SEO_OG:-false}" != "true" ]]        && s_issues="${s_issues}Sin Open Graph. "
+  if   (( ${SCORE_SEO:-0} >= 90 )); then CTX_SEO="Fundamentos SEO sólidos. ${s_issues:-Todos los elementos críticos presentes.}"
+  elif (( ${SCORE_SEO:-0} >= 70 )); then CTX_SEO="SEO básico cubierto con algunas brechas. ${s_issues}"
+  else                                   CTX_SEO="SEO deficiente — visibilidad orgánica comprometida. ${s_issues}"
+  fi
+
+  # Accesibilidad
+  local a_issues=""
+  (( ${ACC_IMGS_NO_ALT:-0} > 0 ))          && a_issues="${a_issues}${ACC_IMGS_NO_ALT} imágenes sin alt. "
+  [[ "${ACC_ARIA:-false}" != "true" ]]      && a_issues="${a_issues}Sin atributos ARIA. "
+  (( ${ACC_AXE_VIOLATIONS:-0} > 0 ))       && a_issues="${a_issues}${ACC_AXE_VIOLATIONS} violations (axe). "
+  (( ${ACC_PA11Y_ERRORS:-0} > 0 ))         && a_issues="${a_issues}${ACC_PA11Y_ERRORS} errores (pa11y). "
+  if   (( ${SCORE_ACCESIBILIDAD:-0} >= 90 )); then CTX_ACCESIBILIDAD="Accesibilidad destacada. ${a_issues:-Sin violations detectadas.}"
+  elif (( ${SCORE_ACCESIBILIDAD:-0} >= 70 )); then CTX_ACCESIBILIDAD="Accesibilidad aceptable con puntos ciegos. ${a_issues}"
+  else                                             CTX_ACCESIBILIDAD="Accesibilidad deficiente — excluye usuarios con discapacidad. ${a_issues}"
+  fi
+
+  # Seguridad
+  local sec_n=0 sec_list=""
+  [[ "${SEC_HSTS:-false}"           != "true" ]] && sec_n=$((sec_n+1)) && sec_list="${sec_list}HSTS, "
+  [[ "${SEC_CSP:-false}"            != "true" ]] && sec_n=$((sec_n+1)) && sec_list="${sec_list}CSP, "
+  [[ "${SEC_XCTO:-false}"           != "true" ]] && sec_n=$((sec_n+1)) && sec_list="${sec_list}X-Content-Type, "
+  [[ "${SEC_XFO:-false}"            != "true" ]] && sec_n=$((sec_n+1)) && sec_list="${sec_list}X-Frame-Options, "
+  [[ "${SEC_RP:-false}"             != "true" ]] && sec_n=$((sec_n+1)) && sec_list="${sec_list}Referrer-Policy, "
+  [[ "${SEC_PER:-false}"            != "true" ]] && sec_n=$((sec_n+1)) && sec_list="${sec_list}Permissions-Policy, "
+  sec_list=$(echo "$sec_list" | sed 's/, $//')
+  local sec_redir=""
+  [[ "${SEC_HTTPS_REDIRECT:-false}" != "true" ]] && sec_redir=" Sin redirección HTTP→HTTPS."
+  if   (( sec_n == 0 )); then CTX_SEGURIDAD="Headers de seguridad completos.${sec_redir}"
+  elif (( sec_n <= 2 )); then CTX_SEGURIDAD="Faltan ${sec_n} headers: ${sec_list}.${sec_redir}"
+  else                        CTX_SEGURIDAD="Faltan ${sec_n} headers críticos: ${sec_list}.${sec_redir}"
+  fi
+
+  # Ciberseguridad
+  local cy_issues=""
+  [[ "$CYBER_SPF"   == "AUSENTE" ]] && cy_issues="${cy_issues}Sin SPF. "
+  [[ "$CYBER_DMARC" == "AUSENTE" ]] && cy_issues="${cy_issues}Sin DMARC. "
+  [[ "$CYBER_DKIM"  == "AUSENTE" ]] && cy_issues="${cy_issues}Sin DKIM. "
+  [[ "${CYBER_EXPOSED_DIRS[0]:-Ninguno detectado}" != "Ninguno detectado" ]] && cy_issues="${cy_issues}Directorios expuestos. "
+  [[ "${CYBER_SOURCE_MAPS:-false}" == "true" ]] && cy_issues="${cy_issues}Source maps públicos. "
+  if   (( ${SCORE_CIBERSEGURIDAD:-0} >= 80 )); then CTX_CIBERSEGURIDAD="Postura de ciberseguridad aceptable. ${cy_issues:-Sin exposiciones críticas.}"
+  elif (( ${SCORE_CIBERSEGURIDAD:-0} >= 60 )); then CTX_CIBERSEGURIDAD="Vulnerabilidades moderadas detectadas. ${cy_issues}"
+  else                                              CTX_CIBERSEGURIDAD="Exposición significativa — requiere atención urgente. ${cy_issues}"
+  fi
+
+  # Calidad técnica
+  local ct_issues=""
+  [[ "${CT_DOCTYPE:-false}"        != "true"  ]] && ct_issues="${ct_issues}Sin DOCTYPE. "
+  [[ "${CT_LANG:-false}"           != "true"  ]] && ct_issues="${ct_issues}Sin atributo lang. "
+  [[ "${CT_CANONICAL:-false}"      != "true"  ]] && ct_issues="${ct_issues}Sin canonical. "
+  [[ "${CT_MIXED_CONTENT:-false}"  == "true"  ]] && ct_issues="${ct_issues}Mixed content detectado. "
+  (( ${CT_INLINE_STYLES:-0} > 10 ))              && ct_issues="${ct_issues}${CT_INLINE_STYLES} estilos inline. "
+  if   (( ${SCORE_CALIDAD_TECNICA:-0} >= 90 )); then CTX_CALIDAD_TECNICA="Base técnica sólida. ${ct_issues:-Sin problemas significativos.}"
+  elif (( ${SCORE_CALIDAD_TECNICA:-0} >= 70 )); then CTX_CALIDAD_TECNICA="Calidad técnica aceptable. ${ct_issues}"
+  else                                               CTX_CALIDAD_TECNICA="Deuda técnica significativa. ${ct_issues}"
+  fi
+
+  # Diseño
+  local d_issues=""
+  [[ "${DIS_FAVICON:-false}"    != "true" ]] && d_issues="${d_issues}Sin favicon. "
+  [[ "${DIS_DARK_MODE:-false}"  != "true" ]] && d_issues="${d_issues}Sin dark mode. "
+  [[ "${DIS_PRINT_CSS:-false}"  != "true" ]] && d_issues="${d_issues}Sin print stylesheet. "
+  local d_fw="${DIS_FRAMEWORKS[*]:-Ninguno detectado}"
+  if   (( ${SCORE_DISENO:-0} >= 85 )); then CTX_DISENO="Diseño bien estructurado. Framework: ${d_fw}. ${d_issues:-Completo.}"
+  elif (( ${SCORE_DISENO:-0} >= 70 )); then CTX_DISENO="Diseño funcional con oportunidades. Framework: ${d_fw}. ${d_issues}"
+  else                                       CTX_DISENO="Diseño con brechas importantes. Framework: ${d_fw}. ${d_issues}"
+  fi
+
+  # UX
+  local u_issues=""
+  [[ "${UX_NAV:-false}"        != "true" ]] && u_issues="${u_issues}Sin navegación semántica. "
+  [[ "${UX_CTA:-false}"        != "true" ]] && u_issues="${u_issues}Sin CTAs claros. "
+  [[ "${UX_CONTACT:-false}"    != "true" ]] && u_issues="${u_issues}Sin contacto visible. "
+  [[ "${UX_CHAT:-false}"       != "true" ]] && u_issues="${u_issues}Sin chat de soporte. "
+  [[ "${UX_NEWSLETTER:-false}" != "true" ]] && u_issues="${u_issues}Sin suscripción. "
+  if   (( ${SCORE_UX:-0} >= 80 )); then CTX_UX="Experiencia de usuario completa. ${u_issues:-Todos los elementos clave presentes.}"
+  elif (( ${SCORE_UX:-0} >= 60 )); then CTX_UX="UX funcional con elementos faltantes. ${u_issues}"
+  else                                   CTX_UX="UX deficiente — impacto directo en conversión. ${u_issues}"
   fi
 }
 
@@ -1229,16 +1378,16 @@ fi)
 
 ## 📊 Scores por Dimensión
 
-| Dimensión | Score | Estado |
-|-----------|------:|--------|
-| ⚡ Performance     | **${SCORE_PERFORMANCE}/100**     | $(score_badge $SCORE_PERFORMANCE) |
-| 🔍 SEO             | **${SCORE_SEO}/100**             | $(score_badge $SCORE_SEO) |
-| ♿ Accesibilidad   | **${SCORE_ACCESIBILIDAD}/100**   | $(score_badge $SCORE_ACCESIBILIDAD) |
-| 🔒 Seguridad       | **${SCORE_SEGURIDAD}/100**       | $(score_badge $SCORE_SEGURIDAD) |
-| 🛡️ Ciberseguridad | **${SCORE_CIBERSEGURIDAD}/100**  | $(score_badge $SCORE_CIBERSEGURIDAD) |
-| ⚙️ Calidad Técnica | **${SCORE_CALIDAD_TECNICA}/100** | $(score_badge $SCORE_CALIDAD_TECNICA) |
-| 🎨 Diseño          | **${SCORE_DISENO}/100**          | $(score_badge $SCORE_DISENO) |
-| 👤 UX              | **${SCORE_UX}/100**              | $(score_badge $SCORE_UX) |
+| Dimensión | Score | Estado | Contexto |
+|-----------|------:|--------|---------|
+| ⚡ Performance     | **${SCORE_PERFORMANCE}/100**     | $(score_badge $SCORE_PERFORMANCE) | ${CTX_PERFORMANCE} |
+| 🔍 SEO             | **${SCORE_SEO}/100**             | $(score_badge $SCORE_SEO) | ${CTX_SEO} |
+| ♿ Accesibilidad   | **${SCORE_ACCESIBILIDAD}/100**   | $(score_badge $SCORE_ACCESIBILIDAD) | ${CTX_ACCESIBILIDAD} |
+| 🔒 Seguridad       | **${SCORE_SEGURIDAD}/100**       | $(score_badge $SCORE_SEGURIDAD) | ${CTX_SEGURIDAD} |
+| 🛡️ Ciberseguridad | **${SCORE_CIBERSEGURIDAD}/100**  | $(score_badge $SCORE_CIBERSEGURIDAD) | ${CTX_CIBERSEGURIDAD} |
+| ⚙️ Calidad Técnica | **${SCORE_CALIDAD_TECNICA}/100** | $(score_badge $SCORE_CALIDAD_TECNICA) | ${CTX_CALIDAD_TECNICA} |
+| 🎨 Diseño          | **${SCORE_DISENO}/100**          | $(score_badge $SCORE_DISENO) | ${CTX_DISENO} |
+| 👤 UX              | **${SCORE_UX}/100**              | $(score_badge $SCORE_UX) | ${CTX_UX} |
 
 ---
 
@@ -1278,6 +1427,8 @@ fi)
 
 ### ⚡ 1. Performance — ${SCORE_PERFORMANCE}/100 $(score_badge $SCORE_PERFORMANCE)
 
+> ${CTX_PERFORMANCE}
+
 | Hallazgo | Valor | Severidad |
 |----------|-------|-----------|
 | Tiempo de respuesta | ${PERF_RESP_MS}ms | $(severity_badge ${PERF_RESP_SEVERITY:-bajo}) |
@@ -1288,6 +1439,11 @@ fi)
 | Scripts JS | ${PERF_JS_COUNT:-0} | $([ "${PERF_JS_COUNT:-0}" -gt 20 ] && echo "🟡 MEDIO" || echo "🟢 OK") |
 | Hojas CSS | ${PERF_CSS_COUNT:-0} | $([ "${PERF_CSS_COUNT:-0}" -gt 10 ] && echo "🟡 MEDIO" || echo "🟢 OK") |
 | Imágenes | ${PERF_IMG_COUNT:-0} | — |
+| Fuentes web | ${PERF_FONTS_COUNT:-0} | — |
+| Imágenes WebP/AVIF | ${PERF_WEBP_COUNT:-0} | $([ "${PERF_WEBP_COUNT:-0}" -gt 0 ] && echo "🟢 OK" || echo "🟡 Ninguna") |
+| Lazy loading | ${PERF_LAZY_COUNT:-0} | $([ "${PERF_LAZY_COUNT:-0}" -gt 0 ] && echo "🟢 OK" || echo "🟡 Sin lazy") |
+| Srcset responsive | ${PERF_SRCSET_COUNT:-0} | $([ "${PERF_SRCSET_COUNT:-0}" -gt 0 ] && echo "🟢 OK" || echo "🟡 Sin srcset") |
+| Dominios 3rd party | ${#PERF_THIRD_PARTY_DOMAINS[@]} | ${PERF_THIRD_PARTY_DOMAINS[*]:-Ninguno} |
 | Protocolo | ${PERF_PROTOCOL} | $(echo "$PERF_PROTOCOL" | grep -q "2\|3" && echo "🟢 OK" || echo "🟡 MEDIO") |
 | Compresión | $(echo "$PERF_COMPRESSION" | grep -qi "gzip\|br\|deflate" && echo "✅ Activa" || echo "❌ Inactiva") | $(echo "$PERF_COMPRESSION" | grep -qi "gzip\|br\|deflate" && echo "🟢 OK" || echo "🟡 MEDIO") |
 $([ -n "${PERF_LH_MOBILE:-}" ] && echo "| Lighthouse 📱 Mobile | ${PERF_LH_MOBILE}/100 | — |")
@@ -1316,6 +1472,8 @@ fi)
 
 ### 🔍 2. SEO — ${SCORE_SEO}/100 $(score_badge $SCORE_SEO)
 
+> ${CTX_SEO}
+
 | Elemento | Estado | Detalle |
 |----------|--------|---------|
 $([ -n "${SITE_OG_IMAGE:-}" ] && echo "![Vista previa](${SITE_OG_IMAGE})" || true)
@@ -1332,6 +1490,8 @@ $([ -n "${SITE_OG_IMAGE:-}" ] && echo "![Vista previa](${SITE_OG_IMAGE})" || tru
 | Schema.org | ${ic_seo_schema} | ${SEO_SCHEMA_TYPES:-N/A} |
 | hreflang | ${ic_seo_hreflang} | — |
 | Links internos / externos | ℹ️ | ${SEO_INT_LINKS:-0} internos · ${SEO_EXT_LINKS:-0} externos |
+| Palabras en página | ℹ️ | ${SEO_WORD_COUNT:-0} palabras |
+| Última modificación | ℹ️ | ${SEO_LAST_MODIFIED:-Desconocido} |
 | robots.txt | $([ "$SEO_ROBOTS" == "200" ] && echo "✅" || echo "❌") | HTTP ${SEO_ROBOTS} |
 | sitemap.xml | $([ "$SEO_SITEMAP" == "200" ] && echo "✅" || echo "❌") | HTTP ${SEO_SITEMAP} |
 $([ -n "${SEO_LH_MOBILE:-}" ] && echo "| Lighthouse SEO 📱 Mobile | ✅ ${SEO_LH_MOBILE}/100 | — |")
@@ -1347,6 +1507,8 @@ $([ -n "${SEO_LH_DESKTOP:-}" ] && echo "| Lighthouse SEO 🖥️ Desktop | ✅ $
 ---
 
 ### ♿ 3. Accesibilidad — ${SCORE_ACCESIBILIDAD}/100 $(score_badge $SCORE_ACCESIBILIDAD)
+
+> ${CTX_ACCESIBILIDAD}
 
 | Elemento | Estado | Detalle |
 |----------|--------|---------|
@@ -1368,6 +1530,8 @@ $([ "${ACC_PA11Y_ERRORS:-0}" -gt 0 ] && echo "| pa11y errores | ⚠️ ${ACC_PA1
 ---
 
 ### 🔒 4. Seguridad — ${SCORE_SEGURIDAD}/100 $(score_badge $SCORE_SEGURIDAD)
+
+> ${CTX_SEGURIDAD}
 
 #### 🌐 Hosting & Dominio
 
@@ -1427,6 +1591,8 @@ $([ -n "${SEC_SSLCHECK_RESULT:-}" ] && echo "| ssl-checker | \`${SEC_SSLCHECK_RE
 
 ### 🛡️ 5. Ciberseguridad — ${SCORE_CIBERSEGURIDAD}/100 $(score_badge $SCORE_CIBERSEGURIDAD)
 
+> ${CTX_CIBERSEGURIDAD}
+
 | Elemento | Estado | Detalle |
 |----------|--------|---------|
 | Server header | $(echo "$CYBER_SERVER" | grep -qiE "^oculto$" && echo "✅ Oculto" || echo "⚠️ Expuesto") | \`${CYBER_SERVER}\` |
@@ -1437,6 +1603,7 @@ $([ -n "${SEC_SSLCHECK_RESULT:-}" ] && echo "| ssl-checker | \`${SEC_SSLCHECK_RE
 | DMARC Record | $(echo "$CYBER_DMARC" | grep -qi "v=DMARC" && echo "✅" || echo "⚠️ AUSENTE") | \`${CYBER_DMARC:0:60}\` |
 | DKIM Record | $(echo "$CYBER_DKIM" | grep -qi "v=DKIM" && echo "✅" || echo "⚠️ AUSENTE") | — |
 | BIMI Record | $(echo "$CYBER_BIMI" | grep -qi "v=BIMI" && echo "✅" || echo "➖ AUSENTE") | — |
+| Source maps | $([ "${CYBER_SOURCE_MAPS:-false}" == "true" ] && echo "🔴 Expuestos" || echo "✅ Ocultos") | — |
 
 **💡 Recomendaciones:**
 - $(echo "$CYBER_SERVER" | grep -qiE "[0-9]\.|apache|nginx|iis|php" && echo "🟠 Ocultar versión en header Server — exponer la versión facilita ataques dirigidos" || echo "Server header sin versión ✓")
@@ -1447,6 +1614,8 @@ $([ -n "${SEC_SSLCHECK_RESULT:-}" ] && echo "| ssl-checker | \`${SEC_SSLCHECK_RE
 ---
 
 ### ⚙️ 6. Calidad Técnica — ${SCORE_CALIDAD_TECNICA}/100 $(score_badge $SCORE_CALIDAD_TECNICA)
+
+> ${CTX_CALIDAD_TECNICA}
 
 | Elemento | Estado |
 |----------|--------|
@@ -1474,6 +1643,8 @@ $([ "${CT_HTMLHINT_ERRORS:-0}" -gt 0 ] && echo "| htmlhint errores | ⚠️ ${CT
 
 ### 🎨 7. Diseño — ${SCORE_DISENO}/100 $(score_badge $SCORE_DISENO)
 
+> ${CTX_DISENO}
+
 | Elemento | Estado | Detalle |
 |----------|--------|---------|
 | Responsive | $([ "$DIS_VIEWPORT"   == "true" ] && echo "✅" || echo "❌") | — |
@@ -1491,6 +1662,8 @@ $([ -n "${DIS_LH_DESKTOP:-}" ] && echo "| Lighthouse Best Practices 🖥️ Desk
 
 ### 👤 8. UX — ${SCORE_UX}/100 $(score_badge $SCORE_UX)
 
+> ${CTX_UX}
+
 | Elemento | Estado |
 |----------|--------|
 | Navegación \`<nav>\` | $([ "$UX_NAV"            == "true" ] && echo "✅" || echo "❌") |
@@ -1504,6 +1677,8 @@ $([ -n "${DIS_LH_DESKTOP:-}" ] && echo "| Lighthouse Best Practices 🖥️ Desk
 | Chat / Soporte | $([ "$UX_CHAT"           == "true" ] && echo "✅" || echo "➖") |
 | Validación formularios | $([ "$UX_FORM_VALIDATION" == "true" ] && echo "✅" || echo "➖") |
 | Language switcher | $([ "$UX_LANG_SWITCH"  == "true" ] && echo "✅" || echo "➖") |
+| Video en página | $([ "${UX_VIDEO:-false}"      == "true" ] && echo "✅" || echo "➖") |
+| Newsletter / Suscripción | $([ "${UX_NEWSLETTER:-false}" == "true" ] && echo "✅" || echo "➖") |
 | Página 404 custom | $([ "$UX_404" == "404" ] && echo "✅" || echo "⚠️") |
 
 ---
@@ -1518,6 +1693,9 @@ $([ -n "${DIS_LH_DESKTOP:-}" ] && echo "| Lighthouse Best Practices 🖥️ Desk
 | Lenguaje backend | ${TECH_LANGUAGE:-Desconocido} |
 | CDN | ${TECH_CDN:-No detectado} |
 | Analytics / Marketing | ${TECH_ANALYTICS[*]:-Ninguno detectado} |
+| Error tracking | ${TECH_ERROR_TRACKING:-Ninguno detectado} |
+| A/B Testing | ${TECH_AB_TESTING:-Ninguno detectado} |
+| Publicidad | ${TECH_AD_SCRIPTS:-Ninguno detectado} |
 
 $([ -n "${TECH_WEBANALYZE:-}" ] && echo "**Análisis extendido (webanalyze):**" && echo '```' && echo "$TECH_WEBANALYZE" && echo '```')
 
@@ -1930,7 +2108,7 @@ generate_json() {
   # Arrays
   local json_css_frameworks json_analytics json_trackers json_san
   local json_nameservers json_schema_types json_exposed_paths json_webanalyze
-  local json_ss_mobile json_ss_desktop json_dimensions_run
+  local json_ss_mobile json_ss_desktop json_dimensions_run json_third_party
 
   json_css_frameworks=$(_jarr "${DIS_FRAMEWORKS[@]}")
   if [[ "${TECH_ANALYTICS[0]:-}" == "Ninguno detectado" || ${#TECH_ANALYTICS[@]} -eq 0 ]]; then
@@ -1940,6 +2118,13 @@ generate_json() {
   fi
   json_trackers=$(_jarr "${LEGAL_TRACKERS[@]}")
   json_san=$(_jarr ${SSL_SAN})
+  local _tp_first=true; json_third_party="["
+  for _tp in "${PERF_THIRD_PARTY_DOMAINS[@]:-}"; do
+    [[ -z "$_tp" ]] && continue
+    [[ "$_tp_first" == "true" ]] && _tp_first=false || json_third_party="${json_third_party},"
+    json_third_party="${json_third_party}\"$(_je "$_tp")\""
+  done
+  json_third_party="${json_third_party}]"
 
   if [[ "${CYBER_EXPOSED_DIRS[0]:-Ninguno detectado}" == "Ninguno detectado" ]]; then
     json_exposed_paths="[]"
@@ -2254,7 +2439,7 @@ generate_json() {
     "compression": "$(_je "${PERF_COMPRESSION:-}")",
     "redirects": ${PERF_REDIRECTS:-0},
     "cdn": "$(_je "${PERF_CDN:-No detectado}")",
-    "resources": { "js": ${PERF_JS_COUNT:-0}, "css": ${PERF_CSS_COUNT:-0}, "images": ${PERF_IMG_COUNT:-0}, "fonts": null, "third_party_domains": null, "webp_avif_usage": null, "lazy_loading_count": null, "srcset_usage": null },
+    "resources": { "js": ${PERF_JS_COUNT:-0}, "css": ${PERF_CSS_COUNT:-0}, "images": ${PERF_IMG_COUNT:-0}, "fonts": ${PERF_FONTS_COUNT:-0}, "third_party_domains": ${json_third_party}, "webp_avif_usage": ${PERF_WEBP_COUNT:-0}, "lazy_loading_count": ${PERF_LAZY_COUNT:-0}, "srcset_usage": ${PERF_SRCSET_COUNT:-0} },
     "lighthouse": {
       "mobile":  { "score": ${PERF_LH_MOBILE:-null},  "lcp": $(_lhnum "largest-contentful-paint" "mobile"),  "fcp": $(_lhnum "first-contentful-paint" "mobile"),  "tbt": $(_lhnum "total-blocking-time" "mobile"),  "cls": $(_lhnum "cumulative-layout-shift" "mobile"),  "speed_index": $(_lhnum "speed-index" "mobile")  },
       "desktop": { "score": ${PERF_LH_DESKTOP:-null}, "lcp": $(_lhnum "largest-contentful-paint" "desktop"), "fcp": $(_lhnum "first-contentful-paint" "desktop"), "tbt": $(_lhnum "total-blocking-time" "desktop"), "cls": $(_lhnum "cumulative-layout-shift" "desktop"), "speed_index": $(_lhnum "speed-index" "desktop") }
@@ -2276,7 +2461,7 @@ generate_json() {
     "robots_txt": ${SEO_ROBOTS:-0}, "sitemap_xml": ${SEO_SITEMAP:-0},
     "internal_links": ${SEO_INT_LINKS:-0}, "external_links": ${SEO_EXT_LINKS:-0},
     "favicon": "$(_je "${SITE_FAVICON:-}")",
-    "word_count": null, "last_modified": null,
+    "word_count": ${SEO_WORD_COUNT:-0}, "last_modified": "$(_je "${SEO_LAST_MODIFIED:-}")",
     "lighthouse": { "mobile": ${SEO_LH_MOBILE:-null}, "desktop": ${SEO_LH_DESKTOP:-null} }
   },
   "accesibilidad": {
@@ -2311,7 +2496,7 @@ generate_json() {
     "security_txt": ${CYBER_SEC_TXT:-0}, "security_txt_contact": "$(_je "${CYBER_SEC_TXT_CONTACT:-}")",
     "spf": "$(_je "${CYBER_SPF:-AUSENTE}")", "dmarc": "$(_je "${CYBER_DMARC:-AUSENTE}")",
     "dkim": "$(_je "${CYBER_DKIM:-AUSENTE}")", "bimi": "$(_je "${CYBER_BIMI:-AUSENTE}")",
-    "source_maps_exposed": null, "dev_tools_active": null
+    "source_maps_exposed": $(_jb "${CYBER_SOURCE_MAPS:-false}"), "dev_tools_active": null
   },
   "calidad_tecnica": {
     "doctype": $(_jb "${CT_DOCTYPE:-false}"), "lang_attribute": $(_jb "${CT_LANG:-false}"),
@@ -2337,7 +2522,7 @@ generate_json() {
     "chat_widget": $(_jb "${UX_CHAT:-false}"), "form_validation": $(_jb "${UX_FORM_VALIDATION:-false}"),
     "language_switcher": $(_jb "${UX_LANG_SWITCH:-false}"),
     "page_404": ${UX_404:-0}, "page_500": ${UX_500:-0},
-    "video_present": null, "newsletter_signup": null
+    "video_present": $(_jb "${UX_VIDEO:-false}"), "newsletter_signup": $(_jb "${UX_NEWSLETTER:-false}")
   },
   "legal": {
     "privacy_policy": $(_jb "${LEGAL_PRIVACY:-false}"), "terms": $(_jb "${LEGAL_TERMS:-false}"),
@@ -2348,7 +2533,7 @@ generate_json() {
     "cms": "$(_je "${TECH_CMS:-Desconocido}")", "framework": "$(_je "${TECH_FRAMEWORK:-Desconocido}")",
     "language": "$(_je "${TECH_LANGUAGE:-Desconocido}")", "server": "$(_je "${TECH_SERVER:-Oculto}")",
     "cdn": "$(_je "${TECH_CDN:-No detectado}")", "analytics": ${json_analytics},
-    "error_tracking": null, "ab_testing": null, "ad_scripts": null,
+    "error_tracking": "$(_je "${TECH_ERROR_TRACKING:-Ninguno detectado}")", "ab_testing": "$(_je "${TECH_AB_TESTING:-Ninguno detectado}")", "ad_scripts": "$(_je "${TECH_AD_SCRIPTS:-Ninguno detectado}")",
     "webanalyze_raw": ${json_webanalyze}
   },
   "email_deliverability": {
@@ -2359,7 +2544,7 @@ generate_json() {
     "ip": "$(_je "${SEC_HOST_IP:-}")", "country": "$(_je "${SEC_HOST_COUNTRY:-Desconocido}")",
     "city": "$(_je "${SEC_HOST_CITY:-Desconocido}")", "org": "$(_je "${SEC_HOST_ORG:-Desconocido}")",
     "asn": "$(_je "${SEC_HOST_ASN:-Desconocido}")", "abuse_contact": "$(_je "${SEC_HOST_ABUSE:-Desconocido}")",
-    "ipv6": null
+    "ipv6": "$(_je "${SEC_HOST_IPV6:-}")"
   },
   "dominio": {
     "registrar": "$(_je "${SEC_DOM_REGISTRAR:-Desconocido}")",
@@ -2392,6 +2577,16 @@ generate_json() {
     "legal":   "$(_je "$persp_legal")",
     "cro":     "$(_je "$persp_cro")",
     "product": "$(_je "$persp_product")"
+  },
+  "context": {
+    "performance":     "$(_je "${CTX_PERFORMANCE:-}")",
+    "seo":             "$(_je "${CTX_SEO:-}")",
+    "accesibilidad":   "$(_je "${CTX_ACCESIBILIDAD:-}")",
+    "seguridad":       "$(_je "${CTX_SEGURIDAD:-}")",
+    "ciberseguridad":  "$(_je "${CTX_CIBERSEGURIDAD:-}")",
+    "calidad_tecnica": "$(_je "${CTX_CALIDAD_TECNICA:-}")",
+    "diseno":          "$(_je "${CTX_DISENO:-}")",
+    "ux":              "$(_je "${CTX_UX:-}")"
   },
   "narrative": {
     "executive_summary": "$(_je "$exec_summary")",
@@ -2477,6 +2672,7 @@ main() {
   fi
 
   compute_global_score
+  compute_dimension_contexts
 
   step "Generando reporte"
   generate_report "$OUT_FILE" "${PREV_REPORT:-}"
