@@ -1698,15 +1698,17 @@ fi
 |:---------:|--------|:-------:|:--------:|-----------|
 $(
   _p=0
-  [ "$SEC_HSTS"       != "true"   ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Implementar HSTS | 4 | 1 | Seguridad |"; }
-  [ "$SEC_CSP"        != "true"   ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Configurar CSP | 4 | 2 | Seguridad |"; }
-  [ "$SEO_TITLE"     == "AUSENTE" ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Añadir title tag | 4 | 1 | SEO |"; }
-  [ "$SEO_META_DESC" == "AUSENTE" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Meta descriptions | 3 | 1 | SEO |"; }
-  [ "$LEGAL_COOKIES"  != "true"   ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Banner cookies GDPR | 3 | 2 | Legal |"; }
-  [ "$ACC_ARIA"       != "true"   ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | ARIA labels | 3 | 2 | Accesibilidad |"; }
-  [ "$SEO_SITEMAP"    != "200"    ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | Generar sitemap.xml | 2 | 1 | SEO |"; }
-  [ "$SEO_SCHEMA"     != "true"   ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | Schema.org | 2 | 2 | SEO |"; }
-  [ "$DIS_FAVICON"    != "true"   ] && { _p=$((_p+1)); echo "| 🟢 ${_p} | Favicon | 1 | 1 | Diseño |"; }
+  [ "$SEC_HSTS"            != "true"   ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Implementar HSTS | 4 | 1 | Seguridad |"; }
+  [ "$SEC_CSP"             != "true"   ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Configurar CSP | 4 | 2 | Seguridad |"; }
+  [ "$SEO_TITLE"          == "AUSENTE" ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Añadir title tag | 4 | 1 | SEO |"; }
+  [ "$SEC_HTTPS_REDIRECT"  != "true"   ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Forzar HTTPS redirect | 4 | 1 | Seguridad |"; }
+  [ "$SEO_META_DESC"      == "AUSENTE" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Meta descriptions | 3 | 1 | SEO |"; }
+  [ "$LEGAL_COOKIES"       != "true"   ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Banner cookies GDPR | 3 | 2 | Legal |"; }
+  [ "$ACC_ARIA"            != "true"   ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | ARIA labels | 3 | 2 | Accesibilidad |"; }
+  [ "$LEGAL_PRIVACY"       != "true"   ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Política de privacidad | 3 | 1 | Legal |"; }
+  [ "$SEO_SITEMAP"         != "200"    ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | Generar sitemap.xml | 2 | 1 | SEO |"; }
+  [ "$SEO_SCHEMA"          != "true"   ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | Schema.org | 2 | 2 | SEO |"; }
+  [ "$DIS_FAVICON"         != "true"   ] && { _p=$((_p+1)); echo "| 🟢 ${_p} | Favicon | 1 | 1 | Diseño |"; }
 )
 
 ---
@@ -1931,7 +1933,11 @@ generate_json() {
   local json_ss_mobile json_ss_desktop json_dimensions_run
 
   json_css_frameworks=$(_jarr "${DIS_FRAMEWORKS[@]}")
-  json_analytics=$(_jarr "${TECH_ANALYTICS[@]}")
+  if [[ "${TECH_ANALYTICS[0]:-}" == "Ninguno detectado" || ${#TECH_ANALYTICS[@]} -eq 0 ]]; then
+    json_analytics="[]"
+  else
+    json_analytics=$(_jarr "${TECH_ANALYTICS[@]}")
+  fi
   json_trackers=$(_jarr "${LEGAL_TRACKERS[@]}")
   json_san=$(_jarr ${SSL_SAN})
 
@@ -2092,37 +2098,35 @@ generate_json() {
 
   # Sprint plan
   local _s1="" _s2="" _s3=""
-  _at() {
-    local _sv="$1" _e="\"$(_je "${2}")\""
-    eval "local _c=\"\$${_sv}\""
-    [[ -n "$_c" ]] && eval "${_sv}=\"\${_c},${_e}\"" || eval "${_sv}=\"${_e}\""
-  }
-  [ "${SEC_HSTS:-false}"           != "true"   ] && _at "_s1" "Implementar HSTS en el servidor web"
-  [ "${SEC_CSP:-false}"            != "true"   ] && _at "_s1" "Configurar Content-Security-Policy"
-  [ "${SEC_XCTO:-false}"           != "true"   ] && _at "_s1" "Añadir X-Content-Type-Options: nosniff"
-  [ "${SEC_XFO:-false}"            != "true"   ] && _at "_s1" "Añadir X-Frame-Options: DENY"
-  [ "${SEC_HTTPS_REDIRECT:-false}" != "true"   ] && _at "_s1" "Forzar redirección HTTP → HTTPS"
-  echo "${PERF_COMPRESSION:-}" | grep -qi "gzip\|br\|deflate" || _at "_s1" "Activar compresión Gzip/Brotli"
-  [ "${SEO_TITLE:-}"              == "AUSENTE" ] && _at "_s1" "Añadir <title> único a todas las páginas"
-  [ "${CT_MIXED_CONTENT:-false}"  == "true"    ] && _at "_s1" "Eliminar recursos HTTP en página HTTPS"
-  [[ -z "$_s1" ]] && _at "_s1" "Mantener estándares actuales — sin críticos detectados"
-  [ "${SEO_META_DESC:-}"          == "AUSENTE" ] && _at "_s2" "Crear meta descriptions únicas (120-160 chars)"
-  [ "${SEO_ROBOTS:-}"              != "200"    ] && _at "_s2" "Crear robots.txt en la raíz del sitio"
-  [ "${SEO_SITEMAP:-}"             != "200"    ] && _at "_s2" "Generar sitemap.xml y registrar en Search Console"
-  [ "${ACC_ARIA:-false}"           != "true"   ] && _at "_s2" "Implementar atributos ARIA en componentes interactivos"
-  (( ${ACC_IMGS_NO_ALT:-0} > 0 )) && _at "_s2" "Añadir atributo alt a ${ACC_IMGS_NO_ALT} imagen(es)"
-  [ "$CYBER_SPF"   == "AUSENTE" ] && _at "_s2" "Configurar registro SPF en DNS"
-  [ "$CYBER_DMARC" == "AUSENTE" ] && _at "_s2" "Configurar registro DMARC en DNS"
-  [ "$CYBER_DKIM"  == "AUSENTE" ] && _at "_s2" "Configurar DKIM en el servidor de correo"
-  [ "${LEGAL_COOKIES:-false}"      != "true"   ] && _at "_s2" "Implementar banner de cookies GDPR"
-  [ "${LEGAL_PRIVACY:-false}"      != "true"   ] && _at "_s2" "Publicar política de privacidad"
-  [[ -z "$_s2" ]] && _at "_s2" "Revisar métricas Core Web Vitals y optimizar LCP"
-  [ "${SEO_SCHEMA:-false}"        != "true"    ] && _at "_s3" "Implementar Schema.org (structured data)"
-  [ "${CT_PWA_MANIFEST:-false}"   != "true"    ] && _at "_s3" "Crear manifest.json para soporte PWA"
-  [ "${DIS_DARK_MODE:-false}"     != "true"    ] && _at "_s3" "Implementar soporte dark mode"
-  _at "_s3" "Auditoría WCAG 2.1 AA completa con herramienta especializada"
-  _at "_s3" "Monitoreo continuo de uptime y Core Web Vitals"
-  _at "_s3" "Revisión legal de política de privacidad por asesor"
+  _at1() { [[ -n "$_s1" ]] && _s1="${_s1},\"$(_je "$1")\"" || _s1="\"$(_je "$1")\""; }
+  _at2() { [[ -n "$_s2" ]] && _s2="${_s2},\"$(_je "$1")\"" || _s2="\"$(_je "$1")\""; }
+  _at3() { [[ -n "$_s3" ]] && _s3="${_s3},\"$(_je "$1")\"" || _s3="\"$(_je "$1")\""; }
+  [ "${SEC_HSTS:-false}"           != "true"   ] && _at1 "Implementar HSTS en el servidor web"
+  [ "${SEC_CSP:-false}"            != "true"   ] && _at1 "Configurar Content-Security-Policy"
+  [ "${SEC_XCTO:-false}"           != "true"   ] && _at1 "Añadir X-Content-Type-Options: nosniff"
+  [ "${SEC_XFO:-false}"            != "true"   ] && _at1 "Añadir X-Frame-Options: DENY"
+  [ "${SEC_HTTPS_REDIRECT:-false}" != "true"   ] && _at1 "Forzar redirección HTTP → HTTPS"
+  echo "${PERF_COMPRESSION:-}" | grep -qi "gzip\|br\|deflate" || _at1 "Activar compresión Gzip/Brotli"
+  [ "${SEO_TITLE:-}"              == "AUSENTE" ] && _at1 "Añadir <title> único a todas las páginas"
+  [ "${CT_MIXED_CONTENT:-false}"  == "true"    ] && _at1 "Eliminar recursos HTTP en página HTTPS"
+  [[ -z "$_s1" ]] && _at1 "Mantener estándares actuales — sin críticos detectados"
+  [ "${SEO_META_DESC:-}"          == "AUSENTE" ] && _at2 "Crear meta descriptions únicas (120-160 chars)"
+  [ "${SEO_ROBOTS:-}"              != "200"    ] && _at2 "Crear robots.txt en la raíz del sitio"
+  [ "${SEO_SITEMAP:-}"             != "200"    ] && _at2 "Generar sitemap.xml y registrar en Search Console"
+  [ "${ACC_ARIA:-false}"           != "true"   ] && _at2 "Implementar atributos ARIA en componentes interactivos"
+  (( ${ACC_IMGS_NO_ALT:-0} > 0 )) && _at2 "Añadir atributo alt a ${ACC_IMGS_NO_ALT} imagen(es)"
+  [ "$CYBER_SPF"   == "AUSENTE" ] && _at2 "Configurar registro SPF en DNS"
+  [ "$CYBER_DMARC" == "AUSENTE" ] && _at2 "Configurar registro DMARC en DNS"
+  [ "$CYBER_DKIM"  == "AUSENTE" ] && _at2 "Configurar DKIM en el servidor de correo"
+  [ "${LEGAL_COOKIES:-false}"      != "true"   ] && _at2 "Implementar banner de cookies GDPR"
+  [ "${LEGAL_PRIVACY:-false}"      != "true"   ] && _at2 "Publicar política de privacidad"
+  [[ -z "$_s2" ]] && _at2 "Revisar métricas Core Web Vitals y optimizar LCP"
+  [ "${SEO_SCHEMA:-false}"        != "true"    ] && _at3 "Implementar Schema.org (structured data)"
+  [ "${CT_PWA_MANIFEST:-false}"   != "true"    ] && _at3 "Crear manifest.json para soporte PWA"
+  [ "${DIS_DARK_MODE:-false}"     != "true"    ] && _at3 "Implementar soporte dark mode"
+  _at3 "Auditoría WCAG 2.1 AA completa con herramienta especializada"
+  _at3 "Monitoreo continuo de uptime y Core Web Vitals"
+  _at3 "Revisión legal de política de privacidad por asesor"
 
   # Correction guide
   local _cg=""
