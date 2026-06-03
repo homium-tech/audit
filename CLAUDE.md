@@ -4,11 +4,13 @@ Este archivo proporciona orientación a Claude Code (claude.ai/code) cuando trab
 
 ## Qué es este proyecto
 
-`homium-audit` es una herramienta CLI en bash puro que audita sitios web desde 8 dimensiones y genera reportes profesionales en Markdown. Corre como skill `/homium-audit` dentro de Claude Code.
+`homium-audit` es una herramienta CLI en bash puro que audita sitios web desde 8 dimensiones y genera reportes profesionales. Corre como skill `/homium-audit` dentro de Claude Code.
 
-**Flujo de uso:** `/homium-audit <URL>` → ejecuta `homium-audit.sh` → guarda `~/audits/reporte-[slug]-[timestamp].md` → Claude presenta el reporte → el usuario lo carga en Claude Design para generar una versión HTML con el design system de Homium.
+**Flujo de uso:** `/homium-audit <URL>` → ejecuta `homium-audit.sh` → guarda dos archivos en `~/audits/`:
+- `reporte-[slug]-[timestamp].md` — reporte visual para stakeholders
+- `reporte-[slug]-[timestamp].json` — datos estructurados para [homium-audit-platform](https://github.com/homium-tech/audit-platform)
 
-El formato de salida es intencionalmente Markdown, no JSON. El reporte `.md` es el entregable final.
+Ambos archivos deben contener **exactamente la misma información**. El MD es el entregable legible para humanos; el JSON es el contrato de datos con la plataforma.
 
 ## Cómo ejecutar y probar
 
@@ -26,7 +28,7 @@ bash homium-audit.sh https://ejemplo.com --quiet
 bash install.sh
 ```
 
-No hay suite de tests. La verificación manual se hace ejecutando el script contra una URL real e inspeccionando el `.md` generado en `~/audits/`.
+No hay suite de tests. La verificación manual se hace ejecutando el script contra una URL real e inspeccionando los archivos `.md` y `.json` generados en `~/audits/`. Para verificar el JSON: `jq '.' reporte-*.json > /dev/null && echo "válido"`.
 
 ## Restricciones de compatibilidad — no romper
 
@@ -40,6 +42,7 @@ El script debe correr en **bash 3.2+** (macOS por defecto), Linux bash y Windows
 | Sin `timeout` directo | macOS no incluye GNU `timeout`; el script usa un wrapper `_timeout` (fallback a perl) |
 | `date -j -f` primero, `date -d` como fallback | Sintaxis macOS vs Linux |
 | `eval` para almacenar scores (`SCORE_S_*`) | Intencional — simula arrays asociativos en bash 3 |
+| Sin `eval` para acumular strings en JSON | `eval` con comillas dobles rompe silenciosamente — usar funciones directas |
 
 ## Arquitectura
 
@@ -57,9 +60,56 @@ El score global es un weighted average calculado en `compute_global_score()`:
 performance:20 seo:15 accesibilidad:15 seguridad:15 ciberseguridad:10 calidad_tecnica:10 diseno:8 ux:7
 ```
 
+### Contextos por dimensión
+
+`compute_dimension_contexts()` se llama después de `compute_global_score()` y antes de `generate_report()`. Genera variables `CTX_*` con una frase explicativa en lenguaje natural por dimensión, basada en los hallazgos reales:
+
+```bash
+CTX_PERFORMANCE   # "Por encima del promedio del sector. Sin CDN. Sin imágenes WebP/AVIF."
+CTX_SEO           # "Fundamentos SEO sólidos. Todos los elementos críticos presentes."
+CTX_SEGURIDAD     # "Faltan 5 headers críticos: HSTS, CSP, ..."
+# ... una por cada dimensión
+```
+
+Estas variables se usan en tres lugares: tabla de scores del MD (columna Contexto), blockquote bajo el heading de cada dimensión, y objeto `context` del JSON.
+
+### HTML_CACHE — una sola descarga
+
+El HTML se descarga una sola vez al inicio de `main()`:
+```bash
+HTML_CACHE=$(fetch_url "$URL")
+```
+Todas las funciones `analyze_*` leen `$HTML_CACHE` con `grep` — sin requests adicionales. Los datos de performance, SEO, accesibilidad, calidad, diseño, UX, tecnología y legal se extraen todos de esta variable. No llamar `fetch_url` dentro de las funciones analyze salvo para URLs específicas (robots.txt, sitemap, rutas expuestas).
+
 ### Lighthouse — una sola ejecución, cacheada
 
-Lighthouse corre una vez vía `run_lighthouse_once()` y cachea los resultados en `$LH_JSON`. Todas las dimensiones que necesitan scores de Lighthouse llaman `lh_score "<category>"` que lee de ese cache. Nunca llamar `run_lighthouse_once()` de forma que dispare múltiples ejecuciones.
+Lighthouse corre una vez vía `run_lighthouse_once()` y cachea los resultados en `$LH_JSON_MOBILE` y `$LH_JSON_DESKTOP`. Todas las dimensiones que necesitan scores de Lighthouse llaman `lh_score "<category>"` o `lh_metric "<audit>"` que leen de ese cache. Nunca llamar `run_lighthouse_once()` de forma que dispare múltiples ejecuciones.
+
+### Dual output: MD + JSON
+
+El ciclo de vida al final de `main()` es:
+```bash
+compute_global_score
+compute_dimension_contexts          # genera CTX_* variables
+generate_report "$OUT_FILE"         # escribe el .md
+generate_json "$JSON_FILE"          # escribe el .json
+```
+
+Ambas funciones leen las mismas variables de shell. Si se agrega un dato nuevo, debe aparecer en **ambas funciones**. El JSON usa helpers internos:
+- `_je "string"` — escapa para JSON (backslashes y comillas)
+- `_jb "bool"` — convierte "true"/"false" a JSON boolean
+- `_jarr item1 item2` — construye array JSON de strings
+- `_lhnum "audit" "device"` — extrae métrica numérica de Lighthouse
+
+### Sprint plan en JSON — patrón _at1/_at2/_at3
+
+El sprint plan usa tres funciones de append directo (sin `eval`) para acumular ítems:
+```bash
+_at1() { [[ -n "$_s1" ]] && _s1="${_s1},\"..\"" || _s1="\"..\""; }
+_at2() { ... }
+_at3() { ... }
+```
+**No usar `eval` para acumular strings** — rompe silenciosamente cuando el string contiene comillas dobles.
 
 ### Cadena de fallbacks para herramientas externas
 
@@ -72,11 +122,36 @@ Cada herramienta opcional tiene un fallback:
 
 ### Ciclo de vida del directorio temporal
 
-`TMPDIR_AUDIT=$(mktemp -d)` se crea al inicio y se elimina al EXIT vía `trap`. Todos los archivos intermedios (Lighthouse JSON, salida de axe, pa11y, htmlhint, HTML crudo) van aquí. Nada persiste entre ejecuciones excepto el reporte `.md` final en `~/audits/`.
+`TMPDIR_AUDIT=$(mktemp -d)` se crea al inicio y se elimina al EXIT vía `trap`. Todos los archivos intermedios (Lighthouse JSON, salida de axe, pa11y, htmlhint, HTML crudo) van aquí. Nada persiste entre ejecuciones excepto los archivos `.md` y `.json` finales en `~/audits/`.
 
-### Generación del reporte
+## Datos que genera el JSON (schema v1.0)
 
-`generate_report()` escribe el archivo Markdown completo en un solo heredoc `cat > "$out_file" << MDEOF`. Todas las variables deben estar asignadas antes de llamar esta función. El heredoc usa subshells `$()` inline para secciones condicionales (badges de score, líneas de recomendación).
+| Sección | Campos clave |
+|---------|-------------|
+| `meta` | version, url, domain, timestamp, sector, tools_available |
+| `scores` | global + 8 dimensiones + email_deliverability |
+| `context` | frase explicativa por dimensión (generada dinámicamente) |
+| `benchmarks` | average y top-10% por sector |
+| `performance` | response_ms, ttfb, size_kb, protocol, compression, cdn, resources (js/css/images/fonts/webp/lazy/srcset/third_party), lighthouse mobile+desktop con CWV |
+| `seo` | title, meta_desc, h1-h3, og, schema, hreflang, robots, sitemap, word_count, last_modified, links |
+| `accesibilidad` | images_alt, aria, skip_nav, forms, axe, pa11y, lighthouse |
+| `seguridad` | headers (hsts/csp/xcto/xfo/rp/per/sri), https_redirect, ssl, cookies, caa, mx |
+| `ciberseguridad` | server, powered_by, exposed_paths, security_txt, spf, dmarc, dkim, bimi, source_maps_exposed |
+| `calidad_tecnica` | doctype, lang, charset, viewport, canonical, inline scripts/styles, deprecated_tags, mixed_content, pwa, htmlhint |
+| `diseno` | viewport, css_frameworks, fonts, favicon, dark_mode, print_css, breakpoints, lighthouse |
+| `ux` | nav, search, contact, cta, responsive, loading, breadcrumbs, social, chat, form_validation, lang_switch, video_present, newsletter_signup, 404/500 |
+| `legal` | privacy_policy, terms, cookie_consent, gdpr, trackers |
+| `tecnologia` | cms, framework, language, server, cdn, analytics, error_tracking, ab_testing, ad_scripts |
+| `hosting` | ip, country, city, org, asn, abuse_contact, ipv6 |
+| `dominio` | registrar, created, expires, nameservers, dnssec, whois_privacy |
+| `email_deliverability` | spf, dmarc, dkim, mx, bimi, score |
+| `findings` | array de hallazgos por dimensión con severity, element, value, description, recommendation |
+| `priority_matrix` | ítems ordenados por impacto × esfuerzo |
+| `sprint_plan` | sprint_1/2/3 con tareas priorizadas |
+| `correction_guide` | cards con código para hallazgos críticos/altos |
+| `perspectives` | texto por rol: ux, seo, devops, legal, cro, product |
+| `narrative` | executive_summary, conclusion |
+| `evolution` | deltas vs reporte anterior |
 
 ## Estructura de archivos
 
@@ -86,46 +161,23 @@ install.sh               # Instalador cross-platform (macOS/Linux/Windows Git Ba
 commands/homium-audit.md # Skill de Claude Code instalada en ~/.claude/commands/
 homium-audit.md          # Spec completa del skill (fuente de verdad para documentación)
 README.md                # Documentación pública
+CLAUDE.md                # Este archivo
 ```
 
 **Nota:** `commands/homium-audit.md` (3 líneas, instalado por `install.sh`) y `homium-audit.md` (raíz, spec completa) tienen propósitos distintos. El instalador copia `commands/homium-audit.md` a `~/.claude/commands/`. El `homium-audit.md` de raíz es el archivo de registro del skill.
 
 ## Problemas conocidos / limitaciones intencionales
 
-- `_timeout` es llamada en `ssl_days_remaining()` pero la función no está definida en el script. El guard `|| { echo "-1"; return; }` evita crashes — SSL siempre retorna "No se pudo verificar" hasta que se corrija.
 - El flag `--dimensions` está documentado en el README y los docs del skill pero no está implementado en el parser de argumentos. Usarlo causa exit 1.
-- El HTML se descarga 6 veces separadas (una por dimensión). Ineficiencia conocida.
-- La columna Δ en la tabla de evolución siempre muestra `—` — el cálculo del delta no está implementado.
+- La columna Δ en la tabla de evolución del MD siempre muestra `—` — el cálculo del delta real está implementado en el JSON (`evolution.deltas`) pero no en la tabla MD.
 - `ipinfo.io` (usado para geolocalización de hosting/IP) tiene un límite gratuito de 50k req/mes. En macOS, `whois` no está instalado por defecto; el fallback RDAP (`rdap.org`) puede retornar datos incompletos para algunos TLDs.
+- El score de Performance puede variar ±5 pts entre ejecuciones consecutivas por variación natural de Lighthouse (especialmente Mobile).
+- `TECH_WEBANALYZE` solo se llena si `webanalyze` está instalado globalmente — no tiene fallback `npx`.
 
-## Roadmap v1.2
+## Reglas al agregar datos nuevos
 
-| # | Mejora | Tipo | Viabilidad | Esfuerzo |
-|---|--------|------|-----------|----------|
-| 1 | Definir `_timeout` wrapper (fallback perl) — fix SSL | Bug fix | ✅ Confirmado | Mínimo |
-| 2 | Implementar `--dimensions` en el parser | Bug fix | ✅ Confirmado | Medio |
-| 3 | Cachear HTML (1 fetch compartido en lugar de 6) | Perf | ✅ Confirmado | Mínimo |
-| 4 | Computar Δ real en tabla de evolución | Mejora reporte | ✅ Confirmado | Mínimo |
-| 5 | Logo del sitio en el reporte vía `og:image` / favicon URL | Imágenes | ✅ Sin deps nuevas — URL ya está en el HTML descargado | Mínimo |
-| 6 | Captura de pantalla del sitio en el reporte | Imágenes | ✅ Puppeteer/Playwright como dep opcional (igual que lighthouse) | Medio |
-| 7 | SSL: datos completos (emisor, algoritmo, cipher, SAN) vía `openssl x509` | Detalle SSL | ✅ Solo requiere el fix de `_timeout` | Bajo |
-| 8 | Dominio: más datos WHOIS (registrar email, status, DNSSEC) | Detalle dominio | ✅ Ya en respuesta RDAP, solo falta parsear más campos | Bajo |
-| 9 | Hosting: ASN detallado, rango IP, abuse contact | Detalle hosting | ✅ `ipinfo.io` ya retorna más campos, falta extraerlos | Bajo |
-| 10 | Sprint plan dinámico generado desde hallazgos reales | Mejora reporte | ✅ Confirmado | Bajo |
-| 11 | DKIM check en Ciberseguridad (completa el trío SPF+DMARC+DKIM) | Feature | ✅ Mismo patrón DNS que SPF/DMARC | Mínimo |
-| 12 | `--threshold <score>` para CI/CD (exit code basado en score mínimo) | Feature | ✅ Confirmado | Mínimo |
-| 13 | `homium-audit --update` / `--version` | Feature | ✅ Confirmado | Bajo |
-| 14 | `--sector <tipo>` para benchmarks contextuales (ecommerce/saas/blog) | Feature | ✅ Tabla de promedios por sector en el script | Medio |
-| 15 | Sección Tecnología vía `webanalyze` (fingerprints Wappalyzer) — CMS, framework JS, e-commerce, CDN, analytics, servidor, lenguaje backend | Nueva sección | ✅ `webanalyze` (Go binary opcional) + fingerprinting bash propio como fallback | Medio |
-| 16 | Core Web Vitals individuales (LCP, CLS, FID/INP) — ya están en `$LH_JSON`, solo falta extraerlos | Detalle Performance | ✅ Sin deps nuevas | Mínimo |
-| 17 | TTFB separado + redirect chain + CDN detectado (Cloudflare, Fastly, Akamai) vía headers ya obtenidos | Detalle Performance | ✅ Sin deps nuevas — `curl -w` + headers | Mínimo |
-| 18 | Recursos externos: cantidad de JS, CSS y fuentes cargadas desde HTML | Detalle Performance | ✅ Grep sobre HTML ya descargado | Mínimo |
-| 19 | SEO extendido: Twitter/X Cards, jerarquía H2/H3, tipos Schema.org, hreflang, meta robots valor, conteo links internos/externos | Detalle SEO | ✅ Sin deps nuevas — grep sobre HTML | Bajo |
-| 20 | Seguridad extendida: versión TLS + cipher suite, HSTS max-age real, calidad CSP (detectar unsafe-inline), SRI en scripts, Cookie SameSite, CAA record, MX record | Detalle Seguridad | ✅ Sin deps nuevas — openssl + headers + DNS API | Bajo |
-| 21 | Ciberseguridad extendida: BIMI record, más rutas expuestas (`/.env`, `/wp-admin`, `/phpinfo.php`, `/swagger`), leer contacto de `security.txt` | Detalle Ciberseguridad | ✅ Sin deps nuevas — DNS API + curl | Mínimo |
-| 22 | Calidad Técnica extendida: tags HTML deprecados (`<center>`, `<font>`), mixed content (HTTP en HTTPS), PWA (manifest.json + service worker) | Detalle Calidad | ✅ Sin deps nuevas — grep sobre HTML | Mínimo |
-| 23 | Diseño extendido: print stylesheet, favicon alta resolución (192px/512px), conteo de breakpoints `@media` | Detalle Diseño | ✅ Sin deps nuevas — grep sobre HTML | Mínimo |
-| 24 | UX extendido: chat widget (Intercom, Drift, Zendesk), redes sociales en footer, breadcrumbs, validación en formularios (`required`, `pattern`), página 500 custom | Detalle UX | ✅ Sin deps nuevas — grep sobre HTML + curl | Mínimo |
-| 25 | Nueva sección Email Deliverability: SPF + DMARC + DKIM + MX + BIMI + puntuación consolidada | Nueva sección | ✅ Sin deps nuevas — DNS API (mismos patrones existentes) | Bajo |
-| 26 | Fixes por hallazgo: columna "Cómo corregir" en todas las tablas + card expandida con código para hallazgos críticos y altos | Mejora reporte | ✅ Sin deps nuevas — lógica condicional en `generate_report()` | Medio |
-| 27 | Sección Conclusión firmada por Homium — lenguaje de negocio, implicaciones reales por no corregir y ventajas concretas de mejorar, generada dinámicamente desde los scores reales | Mejora reporte | ✅ Sin deps nuevas — lógica condicional en `generate_report()` | Bajo |
+1. **Siempre en ambos archivos** — si un dato va al MD, va al JSON y viceversa.
+2. **Sin requests extra** — preferir extraer de `$HTML_CACHE` (grep) o de los JSON de Lighthouse ya cacheados.
+3. **Inicializar con default** — toda variable nueva debe tener `${VAR:-valor_default}` en el heredoc para evitar errores por variable no asignada.
+4. **JSON válido** — después de agregar campos, verificar con `jq '.' archivo.json`.
+5. **Actualizar `compute_dimension_contexts()`** — si un hallazgo nuevo afecta la explicación de una dimensión, agregar la condición correspondiente.
