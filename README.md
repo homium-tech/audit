@@ -3,7 +3,7 @@
 > Herramienta de auditoría web profesional para Claude Code.
 > Analiza sitios web desde **8 dimensiones**, genera reportes Markdown listos para stakeholders y detecta el stack tecnológico completo.
 
-[![Version](https://img.shields.io/badge/versión-1.4.0-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.4.0)
+[![Version](https://img.shields.io/badge/versión-1.4.1-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.4.1)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Compatible-blueviolet)](https://claude.ai)
 [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-green)](https://www.gnu.org/software/bash/)
@@ -175,7 +175,7 @@ El `.md` incluye:
 
 ```
 homium-audit/
-├── homium-audit.sh          # Script principal (v1.4.0)
+├── homium-audit.sh          # Script principal (v1.4.1)
 ├── install.sh               # Instalador one-liner
 ├── commands/
 │   └── homium-audit.md      # Skill /homium-audit para Claude Code
@@ -194,6 +194,11 @@ Este repo es el **motor de recolección de datos**. Para el dashboard, gestión 
 ---
 
 ## 📋 Changelog
+
+### v1.4.1 — Alinear MD y JSON
+- **Fix `sprint_plan` vacío** — Bug crítico en la función `_at()`: usaba `eval` con comillas dobles sin escapar, lo que hacía que `sprint_1/2/3` siempre salieran como `[]` en el JSON. Reemplazado por tres funciones `_at1/_at2/_at3` que concatenan directamente sin `eval`
+- **Priority matrix completa en MD** — El MD no incluía "Forzar HTTPS redirect" ni "Política de privacidad" en la matriz de priorización. Ahora ambos archivos tienen las mismas 11 condiciones evaluadas
+- **Fix analytics vacío** — `"analytics": ["Ninguno detectado"]` se corrige a `"analytics": []` cuando no hay herramientas detectadas
 
 ### v1.4.0 — JSON output estructurado
 - **Nuevo archivo `.json`** — cada auditoría genera `reporte-[slug]-[timestamp].json` junto al `.md` en `~/audits/`
