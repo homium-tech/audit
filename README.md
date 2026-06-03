@@ -3,7 +3,7 @@
 > Herramienta de auditoría web profesional para Claude Code.
 > Analiza sitios web desde **8 dimensiones**, genera reportes Markdown listos para stakeholders y detecta el stack tecnológico completo.
 
-[![Version](https://img.shields.io/badge/versión-1.4.1-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.4.1)
+[![Version](https://img.shields.io/badge/versión-1.5.0-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.5.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Compatible-blueviolet)](https://claude.ai)
 [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-green)](https://www.gnu.org/software/bash/)
@@ -175,7 +175,7 @@ El `.md` incluye:
 
 ```
 homium-audit/
-├── homium-audit.sh          # Script principal (v1.4.1)
+├── homium-audit.sh          # Script principal (v1.5.0)
 ├── install.sh               # Instalador one-liner
 ├── commands/
 │   └── homium-audit.md      # Skill /homium-audit para Claude Code
@@ -194,6 +194,21 @@ Este repo es el **motor de recolección de datos**. Para el dashboard, gestión 
 ---
 
 ## 📋 Changelog
+
+### v1.5.0 — Contextos por dimensión + datos enriquecidos
+
+**Contextos explicativos:**
+- Nueva función `compute_dimension_contexts()` — genera una frase en lenguaje natural por dimensión basada en los hallazgos reales (no texto fijo)
+- Aparece en **3 lugares**: columna "Contexto" en la tabla de scores, blockquote bajo el heading de cada dimensión en los hallazgos, y campo `context` por dimensión en el JSON
+- Ejemplo: Seguridad 10/100 → *"Faltan 5 headers críticos: HSTS, X-Content-Type, X-Frame-Options, Referrer-Policy, Permissions-Policy. Sin redirección HTTP→HTTPS."*
+
+**Datos nuevos (sin costo de red — grep sobre HTML ya descargado):**
+- `performance.resources`: `lazy_loading_count`, `srcset_usage`, `webp_avif_usage`, `fonts`, `third_party_domains`
+- `seo`: `word_count`, `last_modified` (del header HTTP)
+- `ciberseguridad`: `source_maps_exposed` — penaliza score si están expuestos
+- `ux`: `video_present`, `newsletter_signup`
+- `tecnologia`: `error_tracking` (Sentry/Bugsnag/Rollbar), `ab_testing` (Optimizely/VWO), `ad_scripts` (Google Ads/DoubleClick)
+- `hosting`: `ipv6` — vía `dig AAAA` con fallback a DNS API
 
 ### v1.4.1 — Alinear MD y JSON
 - **Fix `sprint_plan` vacío** — Bug crítico en la función `_at()`: usaba `eval` con comillas dobles sin escapar, lo que hacía que `sprint_1/2/3` siempre salieran como `[]` en el JSON. Reemplazado por tres funciones `_at1/_at2/_at3` que concatenan directamente sin `eval`
