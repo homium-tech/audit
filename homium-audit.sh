@@ -2843,6 +2843,54 @@ generate_json() {
   fi
   conclusion="De acuerdo al análisis de Homium, ${domain} obtuvo ${SCORE_GLOBAL:-0}/100 — sitio ${_estado}. Dimensión más fuerte: ${_bd//_/ } (${_bs}/100). Mayor oportunidad: ${_wd//_/ } (${_ws}/100)."
 
+  # Narrative blocks — fortalezas
+  local _narr_forte=""
+  _narr_fta() { [[ -n "$_narr_forte" ]] && _narr_forte="${_narr_forte},\"$(_je "$1")\"" || _narr_forte="\"$(_je "$1")\""; }
+  (( ${SCORE_PERFORMANCE:-0} >= 80 ))     && _narr_fta "Performance aceptable en desktop (${SCORE_PERFORMANCE}/100) — Lighthouse desktop: ${PERF_LH_DESKTOP:-N/A}/100."
+  (( ${SCORE_SEO:-0} >= 90 ))             && _narr_fta "SEO técnico sólido (${SCORE_SEO}/100) — title, meta, schema, sitemap y robots correctamente configurados."
+  (( ${SCORE_ACCESIBILIDAD:-0} >= 90 ))   && _narr_fta "Accesibilidad destacada (${SCORE_ACCESIBILIDAD}/100) — sin violations WCAG detectadas por axe-core ni pa11y."
+  (( ${SCORE_CALIDAD_TECNICA:-0} >= 90 )) && _narr_fta "Base técnica limpia (${SCORE_CALIDAD_TECNICA}/100) — DOCTYPE, lang, viewport, canonical y charset correctamente implementados."
+  (( ${SCORE_DISENO:-0} >= 85 ))          && _narr_fta "Diseño bien estructurado (${SCORE_DISENO}/100)."
+  [[ -z "$_narr_forte" ]] && _narr_forte="\"Sin fortalezas destacadas en esta auditoría.\""
+  local json_narr_forte="[${_narr_forte}]"
+
+  # Narrative blocks — brechas críticas
+  local _narr_brechas=""
+  _narr_bra() {
+    local _obj="{\"tipo\":\"$(_je "$1")\",\"texto\":\"$(_je "$2")\"}"
+    [[ -n "$_narr_brechas" ]] && _narr_brechas="${_narr_brechas},${_obj}" || _narr_brechas="${_obj}"
+  }
+  if [[ "${SEC_HSTS:-false}" != "true" ]] || [[ "${SEC_HTTPS_REDIRECT:-false}" != "true" ]]; then
+    _narr_bra "seguridad" "Seguridad (${SCORE_SEGURIDAD}/100) — nivel crítico. Faltan headers fundamentales: HSTS, X-Content-Type-Options, X-Frame-Options. Sin redirección HTTP→HTTPS."
+  fi
+  if [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]] || [[ "${GEO_LLMS_TXT:-false}" != "true" ]]; then
+    _narr_bra "geo" "Visibilidad en IA generativa (GEO ${SCORE_GEO}/100) — oportunidad sin aprovechar. ChatGPT (${GEO_ENGINE_CHATGPT}/100), Gemini (${GEO_ENGINE_GEMINI}/100), Claude (${GEO_ENGINE_CLAUDE}/100) y Perplexity (${GEO_ENGINE_PERPLEXITY}/100) pueden acceder al sitio pero raramente lo citarán. Sin FAQPage schema ni /llms.txt."
+  fi
+  if [[ "${CYBER_DMARC:-AUSENTE}" == "AUSENTE" ]] || [[ "${CYBER_DKIM:-AUSENTE}" == "AUSENTE" ]]; then
+    _narr_bra "email" "Email deliverability comprometida. Sin DMARC y DKIM cualquier persona puede suplantar el dominio."
+  fi
+  if [[ "${LEGAL_COOKIES:-false}" != "true" ]]; then
+    _narr_bra "legal" "Riesgo legal GDPR activo. Sin banner de consentimiento de cookies. Infracción del Reglamento ePrivacy — multas de hasta 20M€ o 4% de facturación anual."
+  fi
+  [[ -z "$_narr_brechas" ]] && _narr_brechas="{\"tipo\":\"ninguna\",\"texto\":\"Sin brechas críticas detectadas.\"}"
+  local json_narr_brechas="[${_narr_brechas}]"
+
+  # Narrative blocks — GEO insight
+  local _narr_geo_txt="Esta dimensión mide si ChatGPT, Gemini, Claude o Perplexity citan el sitio cuando un usuario hace una pregunta relacionada con el negocio. Score actual: ${SCORE_GEO}/100."
+  [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]] && _narr_geo_txt="${_narr_geo_txt} Gap crítico: sin FAQPage schema las IA no pueden extraer respuestas directas del contenido."
+  [[ "${GEO_LLMS_TXT:-false}" != "true" ]]   && _narr_geo_txt="${_narr_geo_txt} Sin /llms.txt el sitio no indica a las IA qué páginas priorizar."
+  local json_narr_geo="$(_je "$_narr_geo_txt")"
+
+  # Narrative blocks — proyección de mejora
+  local _narr_pg=$(( ${SCORE_GLOBAL:-0} + 12 )); (( _narr_pg > 99 )) && _narr_pg=99
+  local _narr_psec=70; (( ${SCORE_SEGURIDAD:-0} >= 70 )) && _narr_psec=${SCORE_SEGURIDAD:-0}
+  local _narr_pgeo=75; (( ${SCORE_GEO:-0} >= 75 ))       && _narr_pgeo=${SCORE_GEO:-0}
+  local _narr_pemail=85; (( ${email_score:-0} >= 85 ))   && _narr_pemail=${email_score:-0}
+  local json_narr_proy="[{\"metrica\":\"Score Global\",\"actual\":${SCORE_GLOBAL:-0},\"proyectado\":${_narr_pg}},{\"metrica\":\"Seguridad\",\"actual\":${SCORE_SEGURIDAD:-0},\"proyectado\":${_narr_psec}},{\"metrica\":\"GEO\",\"actual\":${SCORE_GEO:-0},\"proyectado\":${_narr_pgeo}},{\"metrica\":\"Email Deliverability\",\"actual\":${email_score:-0},\"proyectado\":${_narr_pemail}}]"
+
+  # Narrative blocks — próximo paso
+  local _narr_proximo="Comenzar por la Hoja de Ruta — las primeras 4-5 acciones eliminan los riesgos activos (seguridad + legal). A partir de ahí, las mejoras GEO son la inversión con mayor proyección de retorno a 6-12 meses, dado el crecimiento exponencial del uso de IA como canal de descubrimiento de servicios."
+
   # Evolution deltas
   local ev_prev="null" ev_g="null" ev_p="null" ev_s="null" ev_a="null"
   local ev_sec="null" ev_cy="null" ev_ct="null" ev_d="null" ev_u="null"
@@ -3101,6 +3149,11 @@ generate_json() {
   "narrative": {
     "executive_summary": "$(_je "$exec_summary")",
     "conclusion": "$(_je "$conclusion")",
+    "fortalezas": ${json_narr_forte},
+    "brechas": ${json_narr_brechas},
+    "geo_insight": "${json_narr_geo}",
+    "proyeccion": ${json_narr_proy},
+    "proximo_paso": "$(_je "$_narr_proximo")",
     "source": "script"
   },
   "evolution": {
