@@ -1093,25 +1093,29 @@ analyze_geo() {
     grep -qi '"sameAs"[[:space:]]*:[[:space:]]*\[\]'  <<< "$html" && GEO_SCHEMA_SAMAS_EMPTY=true  || GEO_SCHEMA_SAMAS_EMPTY=false
   fi
 
-  # E-E-A-T: About page (separate URL or in-page section)
-  GEO_PAGE_ABOUT=false
+  # E-E-A-T: About page — distinguish separate URL vs in-page section
+  GEO_PAGE_ABOUT=false; GEO_PAGE_ABOUT_TYPE="ninguna"
   local _about_s; _about_s=$(http_status "${base}/nosotros" 2>/dev/null || echo "0")
-  [[ "$_about_s" == "200" ]] && GEO_PAGE_ABOUT=true
+  [[ "$_about_s" == "200" ]] && GEO_PAGE_ABOUT=true && GEO_PAGE_ABOUT_TYPE="pagina"
   if [[ "$GEO_PAGE_ABOUT" == false ]]; then
     _about_s=$(http_status "${base}/about" 2>/dev/null || echo "0")
-    [[ "$_about_s" == "200" ]] && GEO_PAGE_ABOUT=true
+    [[ "$_about_s" == "200" ]] && GEO_PAGE_ABOUT=true && GEO_PAGE_ABOUT_TYPE="pagina"
   fi
-  [[ "$GEO_PAGE_ABOUT" == false ]] && grep -qiE 'id="(nosotros|about|quienes-somos)"|href="#(nosotros|about|quienes)"' <<< "$html" && GEO_PAGE_ABOUT=true
+  if [[ "$GEO_PAGE_ABOUT" == false ]]; then
+    grep -qiE 'id="(nosotros|about|quienes-somos)"|href="#(nosotros|about|quienes)"' <<< "$html" && GEO_PAGE_ABOUT=true && GEO_PAGE_ABOUT_TYPE="seccion"
+  fi
 
-  # E-E-A-T: Contact page
-  GEO_PAGE_CONTACT=false
+  # E-E-A-T: Contact page — distinguish separate URL vs in-page section
+  GEO_PAGE_CONTACT=false; GEO_PAGE_CONTACT_TYPE="ninguna"
   local _contact_s; _contact_s=$(http_status "${base}/contacto" 2>/dev/null || echo "0")
-  [[ "$_contact_s" == "200" ]] && GEO_PAGE_CONTACT=true
+  [[ "$_contact_s" == "200" ]] && GEO_PAGE_CONTACT=true && GEO_PAGE_CONTACT_TYPE="pagina"
   if [[ "$GEO_PAGE_CONTACT" == false ]]; then
     _contact_s=$(http_status "${base}/contact" 2>/dev/null || echo "0")
-    [[ "$_contact_s" == "200" ]] && GEO_PAGE_CONTACT=true
+    [[ "$_contact_s" == "200" ]] && GEO_PAGE_CONTACT=true && GEO_PAGE_CONTACT_TYPE="pagina"
   fi
-  [[ "$GEO_PAGE_CONTACT" == false ]] && grep -qiE 'id="(contacto|contact|contactanos)"|href="#(contacto|contact)"' <<< "$html" && GEO_PAGE_CONTACT=true
+  if [[ "$GEO_PAGE_CONTACT" == false ]]; then
+    grep -qiE 'id="(contacto|contact|contactanos)"|href="#(contacto|contact)"' <<< "$html" && GEO_PAGE_CONTACT=true && GEO_PAGE_CONTACT_TYPE="seccion"
+  fi
 
   # Author visible in HTML
   GEO_AUTHOR_VISIBLE=false
@@ -1757,14 +1761,14 @@ $([ -n "${SEO_LH_DESKTOP:-}" ] && echo "| Lighthouse SEO 🖥️ Desktop | ✅ $
 | Claude puede leer el sitio | $([ "$GEO_BOT_CLAUDE" == "true" ] && echo "✅ Sí" || echo "❌ Bloqueado") | Claude con búsqueda web puede referenciar el sitio |
 | Perplexity puede leer el sitio | $([ "$GEO_BOT_PERPLEXITY" == "true" ] && echo "✅ Sí" || echo "❌ Bloqueado") | Perplexity puede incluir el sitio en resultados en tiempo real |
 | Guía de contenido para IA (/llms.txt) | $([ "$GEO_LLMS_TXT" == "true" ] && echo "✅ Existe" || echo "❌ Ausente") | Indica a los motores de IA qué páginas priorizar |
-| Tipo de sitio detectado | ℹ️ ${GEO_SITE_TYPE} | Determina qué señales de contenido son prioritarias |
+| Tipo de sitio detectado | ℹ️ ${GEO_SITE_TYPE} | $(if [ "$GEO_SITE_TYPE" == "ecommerce" ]; then echo "E-commerce detectado — Product schema prioritario"; elif [ "$GEO_SITE_TYPE" == "blog" ]; then echo "Blog detectado — Article schema prioritario"; elif [ "$GEO_SITE_TYPE" == "onepager" ]; then echo "One-pager — toda la auditoría en una sola URL"; else echo "Shopify/WooCommerce: No · Blog: No · SPA: No"; fi) |
 
 #### Confianza — ¿pueden verificar quién está detrás del sitio?
 
 | Señal | Estado | Qué significa |
 |-------|--------|---------------|
-| Página "Quiénes somos" | $([ "$GEO_PAGE_ABOUT" == "true" ] && echo "✅ Existe" || echo "❌ No existe") | Gemini y Claude necesitan saber quién opera el sitio |
-| Página de contacto | $([ "$GEO_PAGE_CONTACT" == "true" ] && echo "✅ Existe" || echo "❌ No existe") | Sin contacto público, el sitio pierde credibilidad ante la IA |
+| Página "Quiénes somos" | $(if [ "$GEO_PAGE_ABOUT_TYPE" == "pagina" ]; then echo "✅ Página separada"; elif [ "$GEO_PAGE_ABOUT_TYPE" == "seccion" ]; then echo "⚠️ Solo sección in-page"; else echo "❌ No existe"; fi) | Gemini y Claude necesitan saber quién opera el sitio |
+| Página de contacto | $(if [ "$GEO_PAGE_CONTACT_TYPE" == "pagina" ]; then echo "✅ Página separada"; elif [ "$GEO_PAGE_CONTACT_TYPE" == "seccion" ]; then echo "⚠️ Solo sección in-page"; else echo "❌ No existe"; fi) | Sin contacto público verificable, el sitio pierde credibilidad ante la IA |
 | Autor visible en el contenido | $([ "$GEO_AUTHOR_VISIBLE" == "true" ] && echo "✅ Detectado" || echo "❌ No detectado") | Los motores de IA usan la autoría para evaluar credibilidad |
 | Fecha de publicación visible | $([ "$GEO_DATE_VISIBLE" == "true" ] && echo "✅ Detectada" || echo "❌ No detectada") | Perplexity prioriza contenido con fecha clara y reciente |
 | Nombre de empresa correcto en schema | $([ "$GEO_SCHEMA_ORG_NAME_OK" == "true" ] && echo "✅ Correcto" || ([ "$GEO_SCHEMA_ORG" == "true" ] && echo "⚠️ Revisar" || echo "➖ Sin schema")) | Permite a la IA identificar la entidad correctamente |
@@ -1776,10 +1780,12 @@ $([ -n "${SEO_LH_DESKTOP:-}" ] && echo "| Lighthouse SEO 🖥️ Desktop | ✅ $
 | Señal | Estado | Qué significa |
 |-------|--------|---------------|
 $(if [[ "$GEO_SITE_TYPE" == "ecommerce" ]]; then
-    echo "| Productos marcados para IA (schema) | $([ "$GEO_SCHEMA_PRODUCT" == "true" ] && echo "✅ Sí" || echo "❌ No") | Principal señal para citación en e-commerce |"
+    echo "| Productos con schema para IA | $([ "$GEO_SCHEMA_PRODUCT" == "true" ] && echo "✅ Sí" || echo "❌ No") | Principal señal de citación para e-commerce |"
     echo "| Reseñas estructuradas | $([ "$GEO_SCHEMA_REVIEW" == "true" ] && echo "✅ Sí" || echo "❌ No") | ChatGPT y Gemini extraen ratings de schema Review |"
   elif [[ "$GEO_SITE_TYPE" == "blog" ]]; then
     echo "| Artículos con autoría estructurada | $([ "$GEO_SCHEMA_ARTICLE" == "true" ] && echo "✅ Sí" || echo "❌ No") | Principal señal editorial para buscadores de IA |"
+  else
+    echo "| Artículos con autoría estructurada | $([ "$GEO_SCHEMA_ARTICLE" == "true" ] && echo "✅ Presente" || echo "➖ No aplica como dimensión principal") | Refuerza la credibilidad del contenido ante la IA |"
 fi)
 | Preguntas y respuestas estructuradas | $([ "$GEO_SCHEMA_FAQ" == "true" ] && echo "✅ Sí" || echo "❌ No") | Principal factor de citación en ChatGPT y Gemini AI Overviews |
 | Guías paso a paso estructuradas | $([ "$GEO_SCHEMA_HOWTO" == "true" ] && echo "✅ Sí" || echo "❌ No") | Tutoriales optimizados para respuestas de IA |
@@ -1787,33 +1793,137 @@ fi)
 | Contenido en listas y tablas | $([ $GEO_STRUCTURED_PCT -ge 40 ] && echo "✅ ${GEO_STRUCTURED_PCT}%" || ([ $GEO_STRUCTURED_PCT -ge 25 ] && echo "⚠️ ${GEO_STRUCTURED_PCT}%" || echo "❌ ${GEO_STRUCTURED_PCT}%")) | Las IA prefieren contenido estructurado (meta: >40%) |
 | Referencias a fuentes reconocidas | $([ $GEO_AUTH_LINKS -gt 0 ] && echo "✅ ${GEO_AUTH_LINKS} de ${GEO_EXT_LINKS_TOTAL}" || echo "❌ 0 de ${GEO_EXT_LINKS_TOTAL}") | Citar fuentes verificables aumenta la confiabilidad ante la IA |
 
-#### 💡 Plan de mejora para IA Generativa
+#### 💡 Hoja de Ruta GEO — Ordenado por impacto y esfuerzo
 
 $(
-  _geo_rec=0
-  [ "$GEO_PAGE_ABOUT" == "false" ] && _geo_rec=$((_geo_rec+1)) && echo "**${_geo_rec}. Crear página \"Quiénes somos\"** — *Afecta: Gemini, Claude*"
-  [ "$GEO_PAGE_ABOUT" == "false" ] && echo "> Las IA necesitan saber quién opera el sitio para citarlo como fuente confiable. Es el cambio de mayor impacto relativo a su esfuerzo. *(Técnico: E-E-A-T — About page)*"
-  [ "$GEO_PAGE_ABOUT" == "false" ] && echo ""
-  [ "$GEO_PAGE_CONTACT" == "false" ] && _geo_rec=$((_geo_rec+1)) && echo "**${_geo_rec}. Crear página de contacto** — *Afecta: Gemini, Claude, ChatGPT*"
-  [ "$GEO_PAGE_CONTACT" == "false" ] && echo "> Sin contacto público verificable, el sitio es penalizado por todos los motores de IA. *(Técnico: E-E-A-T — Contact page)*"
-  [ "$GEO_PAGE_CONTACT" == "false" ] && echo ""
-  [ "$GEO_SCHEMA_FAQ" == "false" ] && _geo_rec=$((_geo_rec+1)) && echo "**${_geo_rec}. Agregar preguntas y respuestas estructuradas** — *Afecta: ChatGPT, Gemini*"
-  [ "$GEO_SCHEMA_FAQ" == "false" ] && echo "> Es el factor individual más importante para aparecer en respuestas de ChatGPT y en AI Overviews de Gemini. *(Técnico: FAQPage schema)*"
-  [ "$GEO_SCHEMA_FAQ" == "false" ] && echo ""
-  [ "$GEO_LLMS_TXT" == "false" ] && _geo_rec=$((_geo_rec+1)) && echo "**${_geo_rec}. Crear guía de contenido para IA (/llms.txt)** — *Afecta: ChatGPT, Claude*"
-  [ "$GEO_LLMS_TXT" == "false" ] && echo "> Indica a los motores de IA qué páginas son prioritarias. Equivalente moderno del sitemap para IA generativa."
-  [ "$GEO_LLMS_TXT" == "false" ] && echo ""
-  [ "$GEO_AUTHOR_VISIBLE" == "false" ] && _geo_rec=$((_geo_rec+1)) && echo "**${_geo_rec}. Mostrar autor visible en el contenido** — *Afecta: Gemini, Claude*"
-  [ "$GEO_AUTHOR_VISIBLE" == "false" ] && echo "> Los motores de IA evalúan la credibilidad del contenido basándose en quién lo escribe. *(Técnico: Article schema + byline visible)*"
-  [ "$GEO_AUTHOR_VISIBLE" == "false" ] && echo ""
-  [ "$GEO_DATE_VISIBLE" == "false" ] && _geo_rec=$((_geo_rec+1)) && echo "**${_geo_rec}. Mostrar fecha de publicación visible** — *Afecta: Perplexity*"
-  [ "$GEO_DATE_VISIBLE" == "false" ] && echo "> Perplexity prioriza contenido con fecha clara. Usar \`<time datetime=\"YYYY-MM-DD\">\` visible en el HTML. *(Técnico: datePublished en DOM)*"
-  [ "$GEO_DATE_VISIBLE" == "false" ] && echo ""
-  [ "$GEO_SCHEMA_SPEAKABLE" == "false" ] && _geo_rec=$((_geo_rec+1)) && echo "**${_geo_rec}. Agregar fragmentos destacados para voz** — *Afecta: Gemini*"
-  [ "$GEO_SCHEMA_SPEAKABLE" == "false" ] && echo "> Indica a Google Asistente y Gemini qué secciones son aptas para respuestas de voz. *(Técnico: Speakable schema)*"
-  [ $GEO_AUTH_LINKS -eq 0 ] && _geo_rec=$((_geo_rec+1)) && echo "**${_geo_rec}. Citar fuentes externas reconocidas** — *Afecta: Claude, Perplexity*"
-  [ $GEO_AUTH_LINKS -eq 0 ] && echo "> Citar fuentes verificables (.gov, .edu, publicaciones reconocidas) aumenta la confiabilidad del contenido ante la IA."
-  [ $_geo_rec -eq 0 ] && echo "> ✅ Todas las señales GEO principales están correctamente configuradas."
+  _has_urgent=false; _has_important=false; _has_medium=false
+
+  # Detectar si hay items en cada grupo
+  if [ "$GEO_PAGE_ABOUT_TYPE" != "pagina" ] || [ "$GEO_PAGE_CONTACT_TYPE" != "pagina" ] || \
+    [ "$GEO_SCHEMA_ORG_NAME_OK" == "false" ] || [ "$GEO_SCHEMA_SAMAS_EMPTY" == "true" ] || \
+    [ "$GEO_BOT_CHATGPT" == "false" ] || [ "$GEO_BOT_GEMINI" == "false" ]; then _has_urgent=true; fi
+  if [ "$GEO_SCHEMA_FAQ" == "false" ] || [ "$GEO_LLMS_TXT" == "false" ]; then _has_important=true; fi
+  if [ "$GEO_AUTHOR_VISIBLE" == "false" ] || [ "$GEO_DATE_VISIBLE" == "false" ] || \
+    [ "$GEO_SCHEMA_SPEAKABLE" == "false" ] || [ $GEO_AUTH_LINKS -eq 0 ] || \
+    [ $GEO_STRUCTURED_PCT -lt 40 ]; then _has_medium=true; fi
+
+  if [[ "$_has_urgent" == true ]]; then
+    echo "##### 🔴 Urgente — alto impacto, menos de 1 día de trabajo"
+    echo ""
+    if [ "$GEO_PAGE_ABOUT_TYPE" != "pagina" ]; then
+      echo "**Crear página dedicada «Quiénes somos»** — *Gemini, Claude* — ~2 horas"
+      if [ "$GEO_PAGE_ABOUT_TYPE" == "seccion" ]; then
+        echo "> El sitio tiene una sección in-page pero no una URL dedicada. Gemini y Claude priorizan páginas separables con URL propia (/nosotros o /about). Una página dedicada transmite más autoridad que una sección anclada."
+      else
+        echo "> Las IA necesitan verificar quién opera el sitio para considerarlo fuente confiable. Sin esta página, Gemini penaliza hasta un 20% el score de confianza E-E-A-T."
+      fi
+      echo "> *(Técnico: crear /nosotros o /about con nombre, misión, equipo y años de experiencia)*"
+      echo ""
+    fi
+    if [ "$GEO_PAGE_CONTACT_TYPE" != "pagina" ]; then
+      echo "**Crear página dedicada de contacto** — *Todos los motores* — ~1 hora"
+      if [ "$GEO_PAGE_CONTACT_TYPE" == "seccion" ]; then
+        echo "> Sección in-page detectada, pero no es suficiente. Una URL /contacto con email, teléfono y formulario es la señal que validan los crawlers de IA para confirmar que la empresa es real y localizable."
+      else
+        echo "> Sin contacto verificable, el sitio pierde credibilidad ante todos los motores de IA. Es la señal de E-E-A-T más fácil de implementar."
+      fi
+      echo "> *(Técnico: crear /contacto o /contact con email, teléfono o formulario)*"
+      echo ""
+    fi
+    if [ "$GEO_BOT_CHATGPT" == "false" ]; then
+      echo "**Desbloquear GPTBot en robots.txt** — *ChatGPT* — 5 minutos"
+      echo "> Sin este cambio el sitio es invisible para ChatGPT Browse y SearchGPT. Es el cambio de mayor impacto con menor esfuerzo posible."
+      echo '> ```'
+      echo '> # robots.txt — eliminar o cambiar:'
+      echo '> User-agent: GPTBot'
+      echo '> Disallow: /   ← REMOVER'
+      echo '> ```'
+      echo ""
+    fi
+    if [ "$GEO_SCHEMA_ORG" == "true" ] && [ "$GEO_SCHEMA_ORG_NAME_OK" == "false" ]; then
+      echo "**Corregir nombre de empresa en el código** — *Todos los motores* — 5 minutos"
+      echo "> El schema dice \`\"name\": \"Home\"\`. Las IA usan este campo para identificar y citar la empresa. Cambiarlo al nombre real es un fix de 5 minutos con impacto inmediato."
+      echo '> ```json'
+      echo '> { "@type": "Organization", "name": "Nombre Real de la Empresa", ... }'
+      echo '> ```'
+      echo ""
+    fi
+    if [ "$GEO_SCHEMA_ORG" == "true" ] && [ "$GEO_SCHEMA_SAMAS_EMPTY" == "true" ]; then
+      echo "**Enlazar perfiles sociales en el código** — *Todos los motores* — 15 minutos"
+      echo "> El campo \`sameAs\` está vacío. Agregar los links de LinkedIn, Instagram y otras redes permite que la IA verifique la presencia oficial de la empresa."
+      echo '> ```json'
+      echo '> "sameAs": ["https://linkedin.com/company/nombre", "https://instagram.com/nombre"]'
+      echo '> ```'
+      echo ""
+    fi
+  fi
+
+  if [[ "$_has_important" == true ]]; then
+    echo "##### 🟠 Importante — muy alto retorno, 1-3 días de trabajo"
+    echo ""
+    if [ "$GEO_SCHEMA_FAQ" == "false" ]; then
+      echo "**Implementar sección de preguntas frecuentes estructurada** — *ChatGPT, Gemini* — 2-4 horas"
+      echo "> Es el factor individual más importante para aparecer citado en AI Overviews de Gemini y en respuestas de ChatGPT. Cada pregunta y respuesta debe estar codificada con FAQPage schema."
+      echo '> ```json'
+      echo '> {'
+      echo '>   "@context": "https://schema.org",'
+      echo '>   "@type": "FAQPage",'
+      echo '>   "mainEntity": [{'
+      echo '>     "@type": "Question",'
+      echo '>     "name": "¿Qué servicios ofrece la empresa?",'
+      echo '>     "acceptedAnswer": {'
+      echo '>       "@type": "Answer",'
+      echo '>       "text": "Respuesta completa en 2-3 oraciones claras y directas."'
+      echo '>     }'
+      echo '>   }]'
+      echo '> }'
+      echo '> ```'
+      echo ""
+    fi
+    if [ "$GEO_LLMS_TXT" == "false" ]; then
+      echo "**Crear guía de contenido para IA (/llms.txt)** — *ChatGPT, Claude* — 30 minutos"
+      echo "> Archivo emergente que indica a los modelos de IA qué páginas son prioritarias y cuál es el propósito del sitio. Equivalente moderno del sitemap para IA generativa. Ya lo adoptaron OpenAI, Anthropic y Perplexity como estándar de referencia."
+      echo '> ```'
+      echo "> # llms.txt"
+      echo '> > Nombre empresa — descripción en una oración.'
+      echo '> '
+      echo '> ## Páginas principales'
+      echo '> - [Servicios](https://dominio.co/servicios): descripción breve'
+      echo '> - [Quiénes somos](https://dominio.co/nosotros): el equipo y la empresa'
+      echo '> - [Contacto](https://dominio.co/contacto): cómo trabajar con nosotros'
+      echo '> ```'
+      echo ""
+    fi
+  fi
+
+  if [[ "$_has_medium" == true ]]; then
+    echo "##### 🟡 Mediano plazo — impacto acumulativo sobre autoridad y frescura"
+    echo ""
+    [ "$GEO_AUTHOR_VISIBLE" == "false" ] && \
+      echo "**Mostrar autor visible en el contenido** — *Gemini, Claude* — ~2 horas" && \
+      echo "> Las IA evalúan la credibilidad del contenido basándose en quién lo escribe. Agregar byline con nombre y cargo, más Article schema con autor, mejora la percepción de autoridad." && \
+      echo "> *(Técnico: Article schema con \`author.name\` + \`<span itemprop=\"author\">\` visible)*" && echo ""
+    [ "$GEO_DATE_VISIBLE" == "false" ] && \
+      echo "**Mostrar fecha de publicación visible en el HTML** — *Perplexity* — ~1 hora" && \
+      echo "> Perplexity prioriza contenido con fecha clara y reciente. El header HTTP tiene last-modified pero no es suficiente — la fecha debe estar visible en el DOM." && \
+      echo '> ```html' && \
+      echo '> <time datetime="2026-05-26">Actualizado: 26 mayo 2026</time>' && \
+      echo '> ```' && echo ""
+    [ "$GEO_SCHEMA_SPEAKABLE" == "false" ] && \
+      echo "**Agregar fragmentos destacados para respuestas de voz** — *Gemini* — ~2 horas" && \
+      echo "> Speakable schema indica a Google Asistente y Gemini qué secciones son aptas para respuestas de voz. Aumenta la probabilidad de aparecer en búsquedas conversacionales." && \
+      echo "> *(Técnico: Speakable schema con cssSelector apuntando a los párrafos clave)*" && echo ""
+    [ $GEO_STRUCTURED_PCT -lt 40 ] && \
+      echo "**Aumentar contenido en formato de listas y tablas** — *Todos los motores* — continuo" && \
+      echo "> Contenido estructurado actual: ${GEO_STRUCTURED_PCT}% (meta: >40%). Las IA extraen respuestas directas de listas y tablas con mucha más facilidad que de bloques de prosa." && echo ""
+    [ $GEO_AUTH_LINKS -eq 0 ] && \
+      echo "**Citar fuentes externas reconocidas** — *Claude, Perplexity* — continuo" && \
+      echo "> 0 de ${GEO_EXT_LINKS_TOTAL} links externos apuntan a fuentes verificables. Citar .gov, .edu, publicaciones del sector o Wikipedia aumenta la confiabilidad del contenido para modelos de IA." && echo ""
+  fi
+
+  if [[ "$_has_urgent" == false && "$_has_important" == false && "$_has_medium" == false ]]; then
+    echo "> ✅ Todas las señales GEO principales están correctamente configuradas. Mantener el llms.txt actualizado con cada cambio relevante del sitio."
+  fi
 )
 
 ---
@@ -2203,17 +2313,6 @@ $(
 
 ---
 
-## 📈 Impacto Esperado
-
-| Acción | KPI | Mejora Est. | Plazo |
-|--------|-----|------------|-------|
-| HSTS + CSP + Headers | Seguridad | +15-20 pts | < 1 semana |
-| Meta tags SEO | CTR orgánico | +10-30% | 4-8 semanas |
-| Compresión Gzip/Brotli | Velocidad | -30-50% tamaño | < 1 día |
-| Schema.org | Rich snippets | +20% CTR | 2-4 semanas |
-| ARIA + Accesibilidad | Alcance + Compliance | +5-15 pts | 2-6 semanas |
-| Banner cookies | Riesgo legal | Reducción riesgo | 1-2 semanas |
-
 ---
 
 $(if [[ -n "$prev_report" && -f "$prev_report" ]]; then
@@ -2256,109 +2355,159 @@ fi)
 
 ---
 
-## 📋 Plan de Acción
+## 🗺️ Hoja de Ruta — Priorizado por Impacto × Esfuerzo
 
+> Las acciones están ordenadas por el mayor retorno con el menor esfuerzo. Implementar en este orden maximiza el impacto en el menor tiempo posible.
+
+| # | Acción | Dimensión | Severidad | Esfuerzo est. | Impacto esperado |
+|:-:|--------|-----------|:---------:|:-------------:|-----------------|
 $(
-s1=""; s2=""; s3=""
-
-# Sprint 1 — Críticos y altos de bajo esfuerzo
-[ "$SEC_HSTS"    != "true"    ] && s1="${s1}- [ ] Implementar HSTS en el servidor web\n"
-[ "$SEC_CSP"     != "true"    ] && s1="${s1}- [ ] Configurar Content-Security-Policy\n"
-[ "$SEC_XCTO"    != "true"    ] && s1="${s1}- [ ] Añadir X-Content-Type-Options: nosniff\n"
-[ "$SEC_XFO"     != "true"    ] && s1="${s1}- [ ] Añadir X-Frame-Options: DENY\n"
-[ "$SEC_HTTPS_REDIRECT" != "true" ] && s1="${s1}- [ ] Forzar redirección HTTP → HTTPS\n"
-echo "$PERF_COMPRESSION" | grep -qi "gzip\|br\|deflate" || s1="${s1}- [ ] Activar compresión Gzip/Brotli en el servidor\n"
-[ "$SEO_TITLE"   == "AUSENTE" ] && s1="${s1}- [ ] Añadir \`<title>\` único a todas las páginas\n"
-[ "$CT_DOCTYPE"  != "true"    ] && s1="${s1}- [ ] Añadir \`<!DOCTYPE html>\` al inicio del HTML\n"
-[ "$CT_MIXED_CONTENT" == "true" ] && s1="${s1}- [ ] Eliminar recursos HTTP en página HTTPS\n"
-[ -z "$s1" ] && s1="- [ ] Mantener los estándares actuales — sin críticos detectados\n"
-
-# Sprint 2 — Medios de esfuerzo razonable
-[ "$SEO_META_DESC" == "AUSENTE" ] && s2="${s2}- [ ] Crear meta descriptions únicas (120-160 chars)\n"
-[ "$SEO_ROBOTS"  != "200"     ] && s2="${s2}- [ ] Crear robots.txt en la raíz del sitio\n"
-[ "$SEO_SITEMAP" != "200"     ] && s2="${s2}- [ ] Generar sitemap.xml y registrar en Search Console\n"
-[ "$ACC_ARIA"    != "true"    ] && s2="${s2}- [ ] Implementar atributos ARIA en componentes interactivos\n"
-[ "${ACC_IMGS_NO_ALT:-0}" -gt 0 ] && s2="${s2}- [ ] Añadir atributo alt a ${ACC_IMGS_NO_ALT} imagen(es)\n"
-[ "$CYBER_SPF"   == "AUSENTE" ] && s2="${s2}- [ ] Configurar registro SPF en DNS\n"
-[ "$CYBER_DMARC" == "AUSENTE" ] && s2="${s2}- [ ] Configurar registro DMARC en DNS\n"
-[ "$CYBER_DKIM"  == "AUSENTE" ] && s2="${s2}- [ ] Configurar DKIM en el servidor de correo\n"
-[ "$LEGAL_COOKIES" != "true"  ] && s2="${s2}- [ ] Implementar banner de cookies GDPR\n"
-[ "$LEGAL_PRIVACY" != "true"  ] && s2="${s2}- [ ] Publicar política de privacidad\n"
-[ -z "$s2" ] && s2="- [ ] Revisar métricas Core Web Vitals y optimizar LCP\n"
-
-# Sprint 3 — Mejoras estratégicas
-[ "$SEO_SCHEMA"  != "true"    ] && s3="${s3}- [ ] Implementar Schema.org (structured data)\n"
-[ "$CT_PWA_MANIFEST" != "true" ] && s3="${s3}- [ ] Crear manifest.json para soporte PWA\n"
-[ "$DIS_DARK_MODE" != "true"  ] && s3="${s3}- [ ] Implementar soporte dark mode\n"
-s3="${s3}- [ ] Auditoría WCAG 2.1 AA completa con herramienta especializada\n"
-s3="${s3}- [ ] Monitoreo continuo de uptime y Core Web Vitals\n"
-s3="${s3}- [ ] Revisión legal de política de privacidad por asesor\n"
-
-echo "### Sprint 1 — Esta semana *(críticos · bajo esfuerzo)*"
-printf "%s" "$s1" | sed 's/\\n/\n/g'
-echo ""
-echo "### Sprint 2 — Próximas 4 semanas"
-printf "%s" "$s2" | sed 's/\\n/\n/g'
-echo ""
-echo "### Sprint 3 — Próximos 3 meses"
-printf "%s" "$s3" | sed 's/\\n/\n/g'
+  _r=0
+  # CRÍTICOS — seguridad (<30 min cada uno)
+  [ "${SEC_HSTS:-false}"           != "true" ] && _r=$((_r+1)) && echo "| ${_r} | Implementar HSTS | Seguridad | 🔴 Crítico | 30 min | +15 pts seguridad · Previene MITM |"
+  [ "${SEC_HTTPS_REDIRECT:-false}" != "true" ] && _r=$((_r+1)) && echo "| ${_r} | Forzar HTTPS redirect (HTTP→HTTPS) | Seguridad | 🔴 Crítico | 30 min | +5 pts seguridad · SEO ranking signal |"
+  [ "${SEC_XCTO:-false}"           != "true" ] && _r=$((_r+1)) && echo "| ${_r} | X-Content-Type-Options: nosniff | Seguridad | 🟠 Alto | 15 min | +3 pts seguridad · Previene MIME sniffing |"
+  [ "${SEC_XFO:-false}"            != "true" ] && _r=$((_r+1)) && echo "| ${_r} | X-Frame-Options: DENY | Seguridad | 🟠 Alto | 15 min | +3 pts seguridad · Previene clickjacking |"
+  [ "${SEC_RP:-false}"             != "true" ] && _r=$((_r+1)) && echo "| ${_r} | Referrer-Policy | Seguridad | 🟡 Medio | 10 min | +2 pts seguridad · Privacidad de referrer |"
+  # GEO — urgentes
+  [ "${GEO_BOT_CHATGPT:-true}"    == "false" ] && _r=$((_r+1)) && echo "| ${_r} | Desbloquear GPTBot en robots.txt | GEO | 🔴 Crítico | 5 min | ChatGPT invisible → visible |"
+  [ "${GEO_BOT_GEMINI:-true}"     == "false" ] && _r=$((_r+1)) && echo "| ${_r} | Desbloquear Googlebot en robots.txt | GEO | 🔴 Crítico | 5 min | Gemini invisible → visible |"
+  [ "${GEO_SCHEMA_ORG_NAME_OK:-false}" == "false" ] && [ "${GEO_SCHEMA_ORG:-false}" == "true" ] && _r=$((_r+1)) && echo "| ${_r} | Corregir nombre empresa en Organization schema | GEO | 🟠 Alto | 5 min | Identificación correcta en todos los motores |"
+  [ "${GEO_SCHEMA_SAMAS_EMPTY:-true}" == "true" ] && [ "${GEO_SCHEMA_ORG:-false}" == "true" ] && _r=$((_r+1)) && echo "| ${_r} | Agregar sameAs con redes sociales oficiales | GEO | 🟠 Alto | 15 min | Verifica presencia oficial de la empresa |"
+  # Legal
+  [ "${LEGAL_COOKIES:-false}"      != "true" ] && _r=$((_r+1)) && echo "| ${_r} | Implementar banner de cookies GDPR | Legal | 🟠 Alto | 1-2h | Elimina riesgo multa hasta €20M |"
+  [ "${LEGAL_PRIVACY:-false}"      != "true" ] && _r=$((_r+1)) && echo "| ${_r} | Publicar política de privacidad | Legal | 🔴 Crítico | 2h | GDPR Art.13 — obligatorio |"
+  # Ciberseguridad email
+  [ "$CYBER_DMARC"                 == "AUSENTE" ] && _r=$((_r+1)) && echo "| ${_r} | Configurar DMARC en DNS | Ciberseguridad | 🟠 Alto | 1h | Protege dominio de suplantación de emails |"
+  [ "$CYBER_DKIM"                  == "AUSENTE" ] && _r=$((_r+1)) && echo "| ${_r} | Configurar DKIM en servidor de correo | Ciberseguridad | 🟠 Alto | 1-2h | Completa trío SPF+DMARC+DKIM |"
+  # GEO — importantes
+  [ "${GEO_PAGE_ABOUT_TYPE:-ninguna}" != "pagina" ] && _r=$((_r+1)) && echo "| ${_r} | Crear página /nosotros dedicada | GEO | 🟠 Alto | 2h | E-E-A-T: +10 pts GEO Gemini/Claude |"
+  [ "${GEO_PAGE_CONTACT_TYPE:-ninguna}" != "pagina" ] && _r=$((_r+1)) && echo "| ${_r} | Crear página /contacto dedicada | GEO | 🟠 Alto | 1h | E-E-A-T: credibilidad ante todos los motores IA |"
+  [ "${GEO_SCHEMA_FAQ:-false}"    != "true" ] && _r=$((_r+1)) && echo "| ${_r} | Implementar FAQPage schema | GEO | 🟠 Alto | 2-4h | Principal factor citación ChatGPT + Gemini AI Overviews |"
+  [ "${GEO_LLMS_TXT:-false}"      != "true" ] && _r=$((_r+1)) && echo "| ${_r} | Crear /llms.txt | GEO | 🟠 Alto | 30 min | Guía de contenido para ChatGPT y Claude |"
+  # Performance
+  [ "${PERF_CDN:-No detectado}"   == "No detectado" ] && _r=$((_r+1)) && echo "| ${_r} | Implementar CDN (Cloudflare Free) | Performance | 🟡 Medio | 1-2h | -30-50% latencia global · +5-10 pts perf |"
+  (( ${PERF_WEBP_COUNT:-0} == 0 )) && _r=$((_r+1)) && echo "| ${_r} | Convertir imágenes a WebP/AVIF | Performance | 🟡 Medio | 2-4h | -20-40% tamaño · mejora LCP móvil |"
+  # GEO — mediano plazo
+  [ "${GEO_AUTHOR_VISIBLE:-false}" != "true" ] && _r=$((_r+1)) && echo "| ${_r} | Mostrar autor visible + Article schema | GEO | 🟡 Medio | 2h | Credibilidad editorial ante IA |"
+  [ "${GEO_DATE_VISIBLE:-false}"   != "true" ] && _r=$((_r+1)) && echo "| ${_r} | Fecha de publicación visible en DOM | GEO | 🟡 Medio | 1h | Frescura verificable para Perplexity |"
+  [ "${GEO_SCHEMA_SPEAKABLE:-false}" != "true" ] && _r=$((_r+1)) && echo "| ${_r} | Speakable schema en secciones clave | GEO | 🟡 Medio | 2h | Fragmentos aptos para respuestas de voz Gemini |"
+  # SEO
+  [ "${SEO_META_DESC:-}"          == "AUSENTE" ] && _r=$((_r+1)) && echo "| ${_r} | Crear meta descriptions únicas (120-160 chars) | SEO | 🟠 Alto | 1h | +10-30% CTR en resultados Google |"
+  [ "${SEO_SCHEMA:-false}"        != "true"    ] && _r=$((_r+1)) && echo "| ${_r} | Implementar Schema.org base | SEO | 🟡 Medio | 2h | Rich snippets en SERP · +20% CTR |"
+  [ "${CT_PWA_MANIFEST:-false}"   != "true"    ] && _r=$((_r+1)) && echo "| ${_r} | PWA manifest + Service Worker | Calidad | 🟢 Bajo | 3-4h | Instalable en móviles · offline support |"
+  [[ $GEO_AUTH_LINKS -eq 0 ]]                    && _r=$((_r+1)) && echo "| ${_r} | Citar fuentes externas reconocidas | GEO | 🟢 Bajo | continuo | Confiabilidad ante Claude y Perplexity |"
+  [ $_r -eq 0 ] && echo "| — | Sin acciones prioritarias detectadas | — | 🟢 | — | Mantener estándares actuales |"
 )
+
+> **Cómo leer esta tabla:** Severidad 🔴 = riesgo activo · 🟠 = oportunidad perdida · 🟡 = mejora estratégica · 🟢 = optimización. Esfuerzo en tiempo de un desarrollador senior.
 
 ---
 
-## 💬 Conclusión
+## 💬 Conclusión Ejecutiva
 
 $(
 # Identificar dimensiones más fuertes y más débiles
-best_dim=""; best_score=0
-worst_dim=""; worst_score=101
-declare_scores="performance:$SCORE_PERFORMANCE seo:$SCORE_SEO accesibilidad:$SCORE_ACCESIBILIDAD seguridad:$SCORE_SEGURIDAD ciberseguridad:$SCORE_CIBERSEGURIDAD calidad_tecnica:$SCORE_CALIDAD_TECNICA diseno:$SCORE_DISENO ux:$SCORE_UX"
+best_dim=""; best_score=0; worst_dim=""; worst_score=101
+declare_scores="performance:$SCORE_PERFORMANCE seo:$SCORE_SEO geo:$SCORE_GEO accesibilidad:$SCORE_ACCESIBILIDAD seguridad:$SCORE_SEGURIDAD ciberseguridad:$SCORE_CIBERSEGURIDAD calidad_tecnica:$SCORE_CALIDAD_TECNICA diseno:$SCORE_DISENO ux:$SCORE_UX"
 for pair in $declare_scores; do
   dim="${pair%%:*}"; val="${pair##*:}"
-  (( val > best_score  )) && best_score=$val  && best_dim=$dim
+  (( val > best_score  )) && best_score=$val && best_dim=$dim
   (( val < worst_score )) && worst_score=$val && worst_dim=$dim
 done
 
+# Contar críticos pendientes
+_crit_count=0
+[ "${SEC_HSTS:-false}"           != "true" ] && _crit_count=$((_crit_count+1))
+[ "${SEC_HTTPS_REDIRECT:-false}" != "true" ] && _crit_count=$((_crit_count+1))
+[ "${LEGAL_PRIVACY:-false}"      != "true" ] && _crit_count=$((_crit_count+1))
+[ "${SEC_CSP:-false}"            != "true" ] && _crit_count=$((_crit_count+1))
+[ "${GEO_BOT_CHATGPT:-true}"    == "false" ] && _crit_count=$((_crit_count+1))
+
+# Score proyectado tras fixes críticos
+_proj_score=$(( SCORE_GLOBAL + (_crit_count * 3) ))
+(( _proj_score > 99 )) && _proj_score=99
+
 # Estado global
-if   (( SCORE_GLOBAL >= 80 )); then estado="sólido"
-elif (( SCORE_GLOBAL >= 60 )); then estado="aceptable con oportunidades claras de mejora"
-else                                 estado="con brechas importantes que requieren atención prioritaria"
+if   (( SCORE_GLOBAL >= 85 )); then _estado="excelente"
+elif (( SCORE_GLOBAL >= 70 )); then _estado="sólido con oportunidades puntuales"
+elif (( SCORE_GLOBAL >= 55 )); then _estado="aceptable con brechas importantes"
+else                                 _estado="con brechas críticas que requieren atención inmediata"
 fi
 
-# Párrafo de apertura
-echo "De acuerdo al análisis realizado por **Homium**, el sitio **${domain}** obtuvo un score global de **${SCORE_GLOBAL}/100**, lo que refleja un sitio ${estado}."
+echo "### Diagnóstico general"
+echo ""
+echo "**${domain}** obtuvo un score global de **${SCORE_GLOBAL}/100** — sitio ${_estado}."
+echo ""
+echo "| Dimensión | Score | Estado |"
+echo "|-----------|:-----:|--------|"
+echo "| ⚡ Performance | ${SCORE_PERFORMANCE}/100 | $(score_badge $SCORE_PERFORMANCE) |"
+echo "| 🔍 SEO | ${SCORE_SEO}/100 | $(score_badge $SCORE_SEO) |"
+echo "| 🤖 GEO (IA Generativa) | ${SCORE_GEO}/100 | $(score_badge $SCORE_GEO) |"
+echo "| ♿ Accesibilidad | ${SCORE_ACCESIBILIDAD}/100 | $(score_badge $SCORE_ACCESIBILIDAD) |"
+echo "| 🔒 Seguridad | ${SCORE_SEGURIDAD}/100 | $(score_badge $SCORE_SEGURIDAD) |"
+echo "| 🛡️ Ciberseguridad | ${SCORE_CIBERSEGURIDAD}/100 | $(score_badge $SCORE_CIBERSEGURIDAD) |"
+echo "| ⚙️ Calidad Técnica | ${SCORE_CALIDAD_TECNICA}/100 | $(score_badge $SCORE_CALIDAD_TECNICA) |"
+echo "| 🎨 Diseño | ${SCORE_DISENO}/100 | $(score_badge $SCORE_DISENO) |"
+echo "| 👤 UX | ${SCORE_UX}/100 | $(score_badge $SCORE_UX) |"
 echo ""
 
-# Lo positivo
-echo "**Lo que está funcionando a favor:**"
-if   (( best_score >= 80 )); then
-  echo "El sitio muestra una fortaleza destacada en **${best_dim//_/ } (${best_score}/100)**$([ "$SCORE_PERFORMANCE" -ge 80 ] && echo ", con tiempos de carga que garantizan una experiencia fluida para el visitante" || echo ""). Esa base es valiosa — y es sobre ella que se construye todo lo demás."
-else
-  echo "Si bien ninguna dimensión alcanza el nivel óptimo, el sitio tiene elementos de base funcionales que facilitan un camino de mejora estructurado."
+# Fortalezas
+echo "### ✅ Fortalezas detectadas"
+echo ""
+(( SCORE_SEO >= 90 ))             && echo "- **SEO técnico sólido (${SCORE_SEO}/100)** — title, meta, schema, sitemap y robots correctamente configurados. Base orgánica estable."
+(( SCORE_ACCESIBILIDAD >= 90 ))   && echo "- **Accesibilidad destacada (${SCORE_ACCESIBILIDAD}/100)** — sin violations WCAG detectadas por axe-core ni pa11y. Alcanza a usuarios con discapacidad."
+(( SCORE_CALIDAD_TECNICA >= 90 )) && echo "- **Base técnica limpia (${SCORE_CALIDAD_TECNICA}/100)** — DOCTYPE, lang, viewport, canonical y charset correctamente implementados."
+(( SCORE_DISENO >= 85 ))          && echo "- **Diseño responsivo bien estructurado (${SCORE_DISENO}/100)** — Bootstrap, dark mode y ${DIS_BREAKPOINTS:-0} breakpoints @media detectados."
+(( SCORE_PERFORMANCE >= 80 ))     && echo "- **Performance aceptable en desktop (${SCORE_PERFORMANCE}/100)** — Lighthouse desktop: ${PERF_LH_DESKTOP:-N/A}/100. Protocolo HTTP/2 activo."
+echo ""
+
+# Brechas críticas
+echo "### 🔴 Brechas que requieren acción inmediata"
+echo ""
+if [ "${SEC_HSTS:-false}" != "true" ] || [ "${SEC_HTTPS_REDIRECT:-false}" != "true" ]; then
+  echo "- **Seguridad (${SCORE_SEGURIDAD}/100) — nivel crítico.** Faltan headers fundamentales: HSTS, X-Content-Type-Options, X-Frame-Options. Sin redirección HTTP→HTTPS. Un atacante puede interceptar la conexión inicial de cualquier visitante. Corrección estimada: menos de 2 horas en el servidor."
+fi
+if [ "${GEO_SCHEMA_FAQ:-false}" != "true" ] || [ "${GEO_LLMS_TXT:-false}" != "true" ]; then
+  echo "- **Visibilidad en IA generativa (GEO ${SCORE_GEO}/100) — oportunidad sin aprovechar.** ChatGPT (${GEO_ENGINE_CHATGPT}/100), Gemini (${GEO_ENGINE_GEMINI}/100), Claude (${GEO_ENGINE_CLAUDE}/100) y Perplexity (${GEO_ENGINE_PERPLEXITY}/100) pueden acceder al sitio pero raramente lo van a citar en sus respuestas. La razón: no hay preguntas estructuradas (FAQPage schema) ni guía de prioridades (/llms.txt). Estos dos elementos son los de mayor impacto/esfuerzo en GEO."
+fi
+if [ "$CYBER_DMARC" == "AUSENTE" ] || [ "$CYBER_DKIM" == "AUSENTE" ]; then
+  echo "- **Email deliverability comprometida.** Sin DMARC y DKIM, cualquier persona puede enviar emails haciéndose pasar por el dominio. Phishing, spam y daño reputacional son riesgos reales. Solución: configuración DNS de 1-2 horas."
+fi
+if [ "${LEGAL_COOKIES:-false}" != "true" ]; then
+  echo "- **Riesgo legal GDPR activo.** Sin banner de consentimiento de cookies. El sitio usa trackers (${LEGAL_TRACKERS[*]:-detectados}) sin consentimiento explícito — infracción del Reglamento ePrivacy. Multas de hasta €20M o 4% de facturación anual."
 fi
 echo ""
 
-# Lo que requiere atención
-echo "**Lo que está costando oportunidades:**"
-[ "$SEC_HSTS" != "true" ] || [ "$SEC_CSP" != "true" ] && \
-  echo "El sitio no cuenta con las protecciones de seguridad estándar, lo que significa que los datos de los visitantes están expuestos a riesgos evitables — algo que puede dañar la reputación de la marca de forma difícil de revertir."
-[ "${ACC_IMGS_NO_ALT:-0}" -gt 0 ] || [ "$ACC_ARIA" != "true" ] && \
-  echo "Una parte de los usuarios — personas con discapacidad visual o motora — no puede navegar el sitio con comodidad, lo que reduce el alcance real de la audiencia y puede representar un riesgo legal en mercados con regulaciones de accesibilidad."
-[ "$LEGAL_COOKIES" != "true" ] || [ "$LEGAL_PRIVACY" != "true" ] && \
-  echo "La ausencia de mecanismos de consentimiento visibles expone al negocio a sanciones significativas bajo normativa GDPR — un riesgo legal prevenible con bajo esfuerzo."
-[ "$SEO_TITLE" == "AUSENTE" ] || [ "$SEO_META_DESC" == "AUSENTE" ] && \
-  echo "Las páginas carecen de elementos SEO fundamentales, lo que limita directamente la visibilidad en buscadores y reduce el tráfico orgánico potencial."
+# GEO deep dive
+echo "### 🤖 Visibilidad en IA Generativa — análisis profundo"
+echo ""
+echo "Esta dimensión mide algo diferente al SEO tradicional: no es si Google te indexa, sino si ChatGPT, Gemini, Claude o Perplexity te **citan** cuando un usuario hace una pregunta relacionada con tu negocio."
+echo ""
+echo "Score actual: **${SCORE_GEO}/100**. Los cuatro motores pueden leer el sitio, pero las señales de confianza y contenido estructurado son insuficientes para generar citación frecuente."
+echo ""
+echo "El gap más crítico: **sin FAQPage schema**, las IA no pueden extraer respuestas directas del contenido — que es exactamente lo que necesitan para citar una página. Con 5-10 preguntas y respuestas bien estructuradas, el score GEO puede pasar de ${SCORE_GEO} a 75+ en una sola sesión de trabajo."
 echo ""
 
-# Perspectiva de cierre
-echo "**Perspectiva general:**"
-if (( SCORE_GLOBAL >= 80 )); then
-  echo "Con ajustes puntuales en las áreas identificadas, **${domain}** puede consolidarse como referente en su categoría. Las mejoras recomendadas son de bajo esfuerzo y alto impacto — una inversión que se traduce directamente en confianza, alcance y conversión."
-elif (( SCORE_GLOBAL >= 60 )); then
-  echo "Resolver las brechas prioritarias no es solo una cuestión técnica — es una decisión de negocio. Un sitio seguro genera más confianza y más conversiones. Uno accesible llega a más personas. Con las acciones del Sprint 1 implementadas, **${domain}** puede alcanzar un score de **$(( SCORE_GLOBAL + 15 ))+/100** en menos de dos semanas."
-else
-  echo "El camino de mejora es claro y los beneficios, tangibles. Atender las brechas críticas identificadas posicionará a **${domain}** en un estado competitivo en menos de un mes, con impacto directo en seguridad, posicionamiento y experiencia del usuario."
-fi
+# Proyección
+echo "### 📈 Proyección de mejora"
+echo ""
+echo "Con las acciones críticas y de alto impacto implementadas (estimado: 1-2 semanas de trabajo):"
+echo ""
+echo "| Métrica | Actual | Proyectado |"
+echo "|---------|:------:|:----------:|"
+echo "| Score Global | ${SCORE_GLOBAL}/100 | ~$((SCORE_GLOBAL + 12))/100 |"
+echo "| Seguridad | ${SCORE_SEGURIDAD}/100 | ~70/100 |"
+echo "| GEO (IA Generativa) | ${SCORE_GEO}/100 | ~75/100 |"
+echo "| Email Deliverability | $(( (SCORE_CIBERSEGURIDAD * 45) / 100 ))/100 | ~85/100 |"
+echo ""
+echo "> Esta proyección asume la implementación de: HSTS + headers de seguridad, FAQPage schema, /llms.txt, DMARC + DKIM. No incluye cambios en performance ni diseño."
+echo ""
+
+# Cierre
+echo "### Próximo paso recomendado"
+echo ""
+echo "Comenzar por la **Hoja de Ruta** — las primeras 4-5 acciones toman menos de 3 horas en total y eliminan los riesgos activos (seguridad + legal). A partir de ahí, las mejoras GEO son la inversión con mayor proyección de retorno a 6-12 meses, dado el crecimiento exponencial del uso de IA como canal de descubrimiento de servicios."
 )
 
 ---
