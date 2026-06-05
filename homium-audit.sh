@@ -398,23 +398,46 @@ lookup_hosting_domain() {
   SEC_HOST_RANGE="Desconocido"; SEC_HOST_ABUSE="Desconocido"
 
   if [[ "$SEC_HOST_IP" != "No resuelto" ]]; then
-    local geo
+    local geo geo_ok=false
+    # ipinfo.io — puede devolver 429 (rate limit); detectar por campo "status" o "error"
     geo=$(curl -sSL --max-time 10 "https://ipinfo.io/${SEC_HOST_IP}/json" 2>/dev/null) || geo=""
-    if [[ -n "$geo" ]] && command -v jq &>/dev/null; then
+    if [[ -n "$geo" ]] && ! echo "$geo" | grep -qE '"status"[[:space:]]*:[[:space:]]*4[0-9]{2}|"error"'; then
+      geo_ok=true
+    else
+      # Fallback: ip-api.com — gratuito, sin rate-limit agresivo
+      geo=$(curl -sSL --max-time 10 "http://ip-api.com/json/${SEC_HOST_IP}?fields=status,country,city,org,as,isp" 2>/dev/null) || geo=""
+      echo "$geo" | grep -q '"status":"success"' && geo_ok=true || geo=""
+    fi
+    if [[ "$geo_ok" == "true" ]] && [[ -n "$geo" ]] && command -v jq &>/dev/null; then
+      # ip-api usa "as" para "ASN org"; ipinfo usa "org"
+      local _org _as
+      _org=$(echo "$geo" | jq -r '.org // .isp // "Desconocido"' 2>/dev/null || echo "Desconocido")
+      _as=$(echo  "$geo" | jq -r '.as  // .org // "Desconocido"' 2>/dev/null || echo "Desconocido")
       SEC_HOST_COUNTRY=$(echo "$geo" | jq -r '.country // "Desconocido"' 2>/dev/null || echo "Desconocido")
       SEC_HOST_CITY=$(echo    "$geo" | jq -r '.city    // "Desconocido"' 2>/dev/null || echo "Desconocido")
-      SEC_HOST_ORG=$(echo     "$geo" | jq -r '.org     // "Desconocido"' 2>/dev/null || echo "Desconocido")
-      SEC_HOST_RANGE=$(echo   "$geo" | jq -r '.ip      // "Desconocido"' 2>/dev/null || echo "Desconocido")
-      SEC_HOST_ASN=$(echo "$SEC_HOST_ORG" | grep -oE '^AS[0-9]+' || echo "Desconocido")
-      SEC_HOST_PROVIDER=$(echo "$SEC_HOST_ORG" | sed 's/^AS[0-9]* //')
-      local abuse_json
-      abuse_json=$(curl -sSL --max-time 8 "https://ipinfo.io/${SEC_HOST_IP}/abuse" 2>/dev/null) || abuse_json=""
-      [[ -n "$abuse_json" ]] && SEC_HOST_ABUSE=$(echo "$abuse_json" | jq -r '.email // "Desconocido"' 2>/dev/null || echo "Desconocido") || true
-    elif [[ -n "$geo" ]]; then
+      SEC_HOST_ORG="$_as"
+      SEC_HOST_RANGE="${SEC_HOST_IP}"
+      SEC_HOST_ASN=$(echo "$_as" | grep -oE '^AS[0-9]+' || echo "Desconocido")
+      SEC_HOST_PROVIDER=$(echo "$_org" | sed 's/^AS[0-9]* //')
+      # abuse email: solo disponible en ipinfo; ip-api no lo provee
+      if echo "$geo" | grep -q '"org"'; then
+        local abuse_json
+        abuse_json=$(curl -sSL --max-time 8 "https://ipinfo.io/${SEC_HOST_IP}/abuse" 2>/dev/null) || abuse_json=""
+        [[ -n "$abuse_json" ]] && SEC_HOST_ABUSE=$(echo "$abuse_json" | jq -r '.email // "Desconocido"' 2>/dev/null || echo "Desconocido") || true
+      fi
+    elif [[ "$geo_ok" == "true" ]] && [[ -n "$geo" ]]; then
+      # sin jq — parseo con grep/sed
+      local _raw_as
+      _raw_as=$(echo "$geo" | grep -o '"as":"[^"]*"' | cut -d'"' -f4 || echo "")
+      [[ -z "$_raw_as" ]] && _raw_as=$(echo "$geo" | grep -o '"org":"[^"]*"' | cut -d'"' -f4 || echo "")
       SEC_HOST_COUNTRY=$(echo "$geo" | grep -o '"country":"[^"]*"' | cut -d'"' -f4 || echo "Desconocido")
       SEC_HOST_CITY=$(echo    "$geo" | grep -o '"city":"[^"]*"'    | cut -d'"' -f4 || echo "Desconocido")
-      SEC_HOST_ORG=$(echo     "$geo" | grep -o '"org":"[^"]*"'     | cut -d'"' -f4 || echo "Desconocido")
-      SEC_HOST_PROVIDER=$(echo "$SEC_HOST_ORG" | sed 's/^AS[0-9]* //')
+      SEC_HOST_ORG="${_raw_as:-Desconocido}"
+      SEC_HOST_RANGE="${SEC_HOST_IP}"
+      SEC_HOST_ASN=$(echo "$_raw_as" | grep -oE '^AS[0-9]+' || echo "Desconocido")
+      local _isp
+      _isp=$(echo "$geo" | grep -o '"isp":"[^"]*"' | cut -d'"' -f4 || echo "")
+      SEC_HOST_PROVIDER="${_isp:-$(echo "$_raw_as" | sed 's/^AS[0-9]* //')}"
     fi
   fi
 
@@ -427,7 +450,7 @@ lookup_hosting_domain() {
   # whois → RDAP API fallback (rdap.org — funciona en Git Bash/Windows)
   local w=""
   if command -v whois &>/dev/null; then
-    w=$(whois "$domain" 2>/dev/null | head -80) || w=""
+    w=$(whois "$domain" 2>/dev/null | head -120) || w=""
   fi
   if [[ -z "$w" ]]; then
     local rdap_tld="${domain##*.}"
@@ -449,13 +472,17 @@ lookup_hosting_domain() {
   fi
   if [[ -n "$w" ]]; then
     local w_orig="$w"
-      SEC_DOM_REGISTRAR=$(echo "$w" | grep -iE "^registrar:"       | head -1 | sed 's/[Rr]egistrar:\s*//' | xargs || echo "Desconocido")
-      SEC_DOM_CREATED=$(echo   "$w" | grep -iE "creation date|created:" | head -1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || echo "")
+      # Los registros WHOIS de Verisign/GoDaddy tienen 3 espacios de indentación — no usar ^
+      SEC_DOM_REGISTRAR=$(echo "$w" | grep -iE "registrar:" | grep -viE "whois|url|iana id|abuse" | head -1 | sed 's/.*[Rr]egistrar:[[:space:]]*//' | xargs || echo "Desconocido")
+      # Priorizar "Creation Date:" (formato WHOIS estándar) sobre "created:" (IANA)
+      SEC_DOM_CREATED=$(echo "$w" | grep -iE "creation date:" | head -1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || \
+                        echo "$w" | grep -iE "created:" | grep -v "1985" | head -1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || echo "")
       SEC_DOM_EXPIRES=$(echo   "$w" | grep -iE "expir"             | head -1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || echo "")
       SEC_DOM_UPDATED=$(echo   "$w" | grep -iE "updated"           | head -1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || echo "")
-      SEC_DOM_NAMESERVERS=$(echo "$w" | grep -iE "^name server:"   | sed 's/[Nn]ame [Ss]erver:\s*//' | tr '\n' ',' | sed 's/,$//' | xargs || echo "Desconocido")
-      SEC_DOM_STATUS=$(echo "$w" | grep -iE "^domain status:" | head -3 | sed 's/[Dd]omain [Ss]tatus:\s*//' | tr '\n' '·' | sed 's/·$//' | xargs || echo "Desconocido")
-      SEC_DOM_ABUSE_EMAIL=$(echo "$w" | grep -iE "registrar abuse contact email" | head -1 | sed 's/.*:\s*//' | xargs || echo "Desconocido")
+      SEC_DOM_NAMESERVERS=$(echo "$w" | grep -iE "name server:" | sed 's/.*[Nn]ame [Ss]erver:[[:space:]]*//' | tr '\n' ',' | sed 's/,$//' | xargs || echo "Desconocido")
+      # Quitar URL ICANN que sigue al código de estado (ej: "clientDeleteProhibited https://...")
+      SEC_DOM_STATUS=$(echo "$w" | grep -iE "domain status:" | head -3 | sed 's/.*[Dd]omain [Ss]tatus:[[:space:]]*//' | sed 's/[[:space:]].*//' | tr '\n' '·' | sed 's/·$//' | xargs || echo "Desconocido")
+      SEC_DOM_ABUSE_EMAIL=$(echo "$w" | grep -iE "registrar abuse contact email" | head -1 | sed 's/.*:[[:space:]]*//' | xargs || echo "Desconocido")
       echo "$w" | grep -qiE "privacy|redacted|protected|proxy" && SEC_DOM_PRIVACY=true || true
       echo "$w" | grep -qiE "dnssec.*signed|signedDelegation" && SEC_DOM_DNSSEC=true || SEC_DOM_DNSSEC=false
       [[ -z "$SEC_DOM_REGISTRAR"   ]] && SEC_DOM_REGISTRAR="Desconocido"
