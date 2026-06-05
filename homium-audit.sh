@@ -55,7 +55,7 @@ HTMLHINT_CMD=$(resolve_cmd "htmlhint" "htmlhint")
 SSLCHECK_CMD=$(resolve_cmd "ssl-checker" "ssl-checker")
 
 # ─── Usage ───────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="1.5.0"
+SCRIPT_VERSION="1.6.0"
 
 usage() {
   echo -e "${BOLD}homium-audit${RESET} v${SCRIPT_VERSION} — Auditoría profesional de sitios web"
@@ -258,7 +258,8 @@ ssl_days_remaining() {
 # ─── Score storage — variables simples (bash 3/4/5 compatible) ──────────────
 SCORE_S_performance=0; SCORE_S_seo=0;       SCORE_S_accesibilidad=0
 SCORE_S_seguridad=0;   SCORE_S_ciberseguridad=0; SCORE_S_calidad_tecnica=0
-SCORE_S_diseno=0;      SCORE_S_ux=0
+SCORE_S_diseno=0;      SCORE_S_ux=0;        SCORE_S_geo=0
+SCORE_GEO=0
 
 set_score() {
   local key="$1" val="${2:-0}"
@@ -1022,6 +1023,219 @@ analyze_diseno() {
   ok "Diseño score: $(score_color $score)"
 }
 
+# ─── GEO — Generative Engine Optimization ────────────────────────────────────
+analyze_geo() {
+  step "Analizando GEO (Visibilidad en IA Generativa)"
+  local html="$HTML_CACHE"
+  local base="${URL%/}"
+  local score=100
+
+  # Site type detection — greps directos en HTML (no depende de analyze_tecnologia)
+  GEO_SITE_TYPE="${SECTOR:-institucional}"
+  if [[ "$GEO_SITE_TYPE" == "institucional" || -z "${SECTOR:-}" ]]; then
+    GEO_SITE_TYPE="institucional"
+    grep -qi 'cdn\.shopify\.com\|Shopify\.theme' <<< "$html"          && GEO_SITE_TYPE="ecommerce"
+    grep -qiE 'woocommerce|prestashop|magento' <<< "$html"            && GEO_SITE_TYPE="ecommerce"
+    grep -qiE '/cart|/carrito|add-to-cart' <<< "$html"                && GEO_SITE_TYPE="ecommerce"
+    if [[ "$GEO_SITE_TYPE" == "institucional" ]]; then
+      grep -qi 'ghost\.io\|content="Ghost' <<< "$html"                && GEO_SITE_TYPE="blog"
+      grep -qiE 'href="[^"]*/blog|href="[^"]*/articulos|href="[^"]*/noticias' <<< "$html" && GEO_SITE_TYPE="blog"
+      grep -qiE '__NEXT_DATA__|/_next/|__nuxt|/_nuxt/' <<< "$html"    && GEO_SITE_TYPE="saas"
+    fi
+    if [[ "$GEO_SITE_TYPE" == "institucional" ]]; then
+      local _ext_pages
+      _ext_pages=$(grep -oE 'href="[^#"]+[^"]"' <<< "$html" | grep -v 'http\|mailto\|tel' | wc -l | tr -d ' ')
+      (( ${_ext_pages:-0} < 3 )) && GEO_SITE_TYPE="onepager"
+    fi
+  fi
+
+  # AI crawlers — download robots.txt content (tiny file, already requested for status)
+  local robots_content
+  robots_content=$(curl -s --max-time 5 "${base}/robots.txt" 2>/dev/null || echo "")
+
+  GEO_BOT_CHATGPT=true; GEO_BOT_GEMINI=true; GEO_BOT_CLAUDE=true; GEO_BOT_PERPLEXITY=true
+
+  # Check wildcard block first
+  if echo "$robots_content" | grep -A2 "User-agent: \*" | grep -qE 'Disallow:[[:space:]]*/[[:space:]]*$'; then
+    GEO_BOT_CHATGPT=false; GEO_BOT_GEMINI=false; GEO_BOT_CLAUDE=false; GEO_BOT_PERPLEXITY=false
+  fi
+  # Per-bot overrides
+  if echo "$robots_content" | grep -qi "User-agent: GPTBot"; then
+    echo "$robots_content" | grep -A5 -i "User-agent: GPTBot" | grep -qE 'Disallow:[[:space:]]*/[[:space:]]*$' && GEO_BOT_CHATGPT=false || GEO_BOT_CHATGPT=true
+  fi
+  if echo "$robots_content" | grep -qiE "User-agent: ClaudeBot|User-agent: anthropic-ai"; then
+    echo "$robots_content" | grep -A5 -iE "User-agent: ClaudeBot|User-agent: anthropic-ai" | grep -qE 'Disallow:[[:space:]]*/[[:space:]]*$' && GEO_BOT_CLAUDE=false || GEO_BOT_CLAUDE=true
+  fi
+  if echo "$robots_content" | grep -qi "User-agent: PerplexityBot"; then
+    echo "$robots_content" | grep -A5 -i "User-agent: PerplexityBot" | grep -qE 'Disallow:[[:space:]]*/[[:space:]]*$' && GEO_BOT_PERPLEXITY=false || GEO_BOT_PERPLEXITY=true
+  fi
+  if echo "$robots_content" | grep -qi "User-agent: Googlebot"; then
+    echo "$robots_content" | grep -A5 -i "User-agent: Googlebot" | grep -qE 'Disallow:[[:space:]]*/[[:space:]]*$' && GEO_BOT_GEMINI=false || GEO_BOT_GEMINI=true
+  fi
+
+  # llms.txt
+  GEO_LLMS_TXT=false
+  [[ "$(http_status "${base}/llms.txt")" == "200" ]] && GEO_LLMS_TXT=true
+
+  # Schema signals — from SEO_SCHEMA_TYPES (already extracted, zero cost)
+  GEO_SCHEMA_FAQ=false;      echo "${SEO_SCHEMA_TYPES:-}" | grep -qi 'FAQPage'                                && GEO_SCHEMA_FAQ=true
+  GEO_SCHEMA_HOWTO=false;    echo "${SEO_SCHEMA_TYPES:-}" | grep -qi 'HowTo'                                  && GEO_SCHEMA_HOWTO=true
+  GEO_SCHEMA_SPEAKABLE=false; echo "${SEO_SCHEMA_TYPES:-}" | grep -qi 'Speakable'                             && GEO_SCHEMA_SPEAKABLE=true
+  GEO_SCHEMA_ARTICLE=false;  echo "${SEO_SCHEMA_TYPES:-}" | grep -qiE 'Article|BlogPosting|NewsArticle'       && GEO_SCHEMA_ARTICLE=true
+  GEO_SCHEMA_PRODUCT=false;  echo "${SEO_SCHEMA_TYPES:-}" | grep -qi 'Product'                                && GEO_SCHEMA_PRODUCT=true
+  GEO_SCHEMA_REVIEW=false;   echo "${SEO_SCHEMA_TYPES:-}" | grep -qiE 'Review|AggregateRating'                && GEO_SCHEMA_REVIEW=true
+  GEO_SCHEMA_ORG=false;      echo "${SEO_SCHEMA_TYPES:-}" | grep -qiE 'Organization|LocalBusiness|Corporation' && GEO_SCHEMA_ORG=true
+
+  # Organization schema quality check
+  GEO_SCHEMA_ORG_NAME_OK=false; GEO_SCHEMA_SAMAS_EMPTY=true
+  if [[ "$GEO_SCHEMA_ORG" == true ]]; then
+    grep -qi '"name"[[:space:]]*:[[:space:]]*"Home"' <<< "$html" && GEO_SCHEMA_ORG_NAME_OK=false || GEO_SCHEMA_ORG_NAME_OK=true
+    grep -qi '"sameAs"[[:space:]]*:[[:space:]]*\[\]'  <<< "$html" && GEO_SCHEMA_SAMAS_EMPTY=true  || GEO_SCHEMA_SAMAS_EMPTY=false
+  fi
+
+  # E-E-A-T: About page (separate URL or in-page section)
+  GEO_PAGE_ABOUT=false
+  local _about_s; _about_s=$(http_status "${base}/nosotros" 2>/dev/null || echo "0")
+  [[ "$_about_s" == "200" ]] && GEO_PAGE_ABOUT=true
+  if [[ "$GEO_PAGE_ABOUT" == false ]]; then
+    _about_s=$(http_status "${base}/about" 2>/dev/null || echo "0")
+    [[ "$_about_s" == "200" ]] && GEO_PAGE_ABOUT=true
+  fi
+  [[ "$GEO_PAGE_ABOUT" == false ]] && grep -qiE 'id="(nosotros|about|quienes-somos)"|href="#(nosotros|about|quienes)"' <<< "$html" && GEO_PAGE_ABOUT=true
+
+  # E-E-A-T: Contact page
+  GEO_PAGE_CONTACT=false
+  local _contact_s; _contact_s=$(http_status "${base}/contacto" 2>/dev/null || echo "0")
+  [[ "$_contact_s" == "200" ]] && GEO_PAGE_CONTACT=true
+  if [[ "$GEO_PAGE_CONTACT" == false ]]; then
+    _contact_s=$(http_status "${base}/contact" 2>/dev/null || echo "0")
+    [[ "$_contact_s" == "200" ]] && GEO_PAGE_CONTACT=true
+  fi
+  [[ "$GEO_PAGE_CONTACT" == false ]] && grep -qiE 'id="(contacto|contact|contactanos)"|href="#(contacto|contact)"' <<< "$html" && GEO_PAGE_CONTACT=true
+
+  # Author visible in HTML
+  GEO_AUTHOR_VISIBLE=false
+  grep -qiE 'class="[^"]*author[^"]*"|rel="author"|itemprop="author"' <<< "$html" && GEO_AUTHOR_VISIBLE=true
+  [[ "$GEO_SCHEMA_ARTICLE" == true ]] && GEO_AUTHOR_VISIBLE=true
+
+  # Date visible in DOM
+  GEO_DATE_VISIBLE=false
+  grep -qi '<time[^>]*datetime=' <<< "$html" && GEO_DATE_VISIBLE=true
+  grep -qiE 'itemprop="datePublished|dateModified"' <<< "$html" && GEO_DATE_VISIBLE=true
+
+  # Social links (reuse UX var)
+  GEO_SOCIAL_LINKS="${UX_SOCIAL:-false}"
+
+  # Structured content ratio
+  local _li_count _table_count
+  _li_count=$(grep -oi '<li[ >]' <<< "$html" | wc -l | tr -d ' ')
+  _table_count=$(grep -oi '<table[ >]' <<< "$html" | wc -l | tr -d ' ')
+  GEO_LI_COUNT=${_li_count:-0}
+  GEO_TABLE_COUNT=${_table_count:-0}
+  GEO_WORD_COUNT="${SEO_WORD_COUNT:-0}"
+  GEO_STRUCTURED_PCT=0
+  if (( ${GEO_WORD_COUNT:-0} > 0 )); then
+    local _struct_words=$(( GEO_LI_COUNT * 10 + GEO_TABLE_COUNT * 60 ))
+    GEO_STRUCTURED_PCT=$(( _struct_words * 100 / GEO_WORD_COUNT ))
+    (( GEO_STRUCTURED_PCT > 100 )) && GEO_STRUCTURED_PCT=100
+  fi
+
+  # Authoritative external links
+  GEO_EXT_LINKS_TOTAL="${SEO_EXT_LINKS:-0}"
+  local _auth_links
+  _auth_links=$(echo "$html" | grep -oE 'href="https?://[^"]*"' | grep -iE '\.(gov|edu)/|wikipedia\.org|pubmed\.ncbi|scholar\.google|who\.int' | wc -l | tr -d ' ')
+  GEO_AUTH_LINKS=${_auth_links:-0}
+  GEO_AUTH_LINKS_PCT=0
+  (( ${GEO_EXT_LINKS_TOTAL:-0} > 0 )) && GEO_AUTH_LINKS_PCT=$(( GEO_AUTH_LINKS * 100 / GEO_EXT_LINKS_TOTAL ))
+
+  # ── Score calculation ──────────────────────────────────────────────────────
+  # Access signals (max -33)
+  [[ "$GEO_BOT_CHATGPT" == false ]]    && score=$((score - 12))
+  [[ "$GEO_BOT_GEMINI" == false ]]     && score=$((score - 8))
+  [[ "$GEO_BOT_CLAUDE" == false ]]     && score=$((score - 5))
+  [[ "$GEO_BOT_PERPLEXITY" == false ]] && score=$((score - 3))
+  [[ "$GEO_LLMS_TXT" == false ]]       && score=$((score - 5))
+
+  # Trust / E-E-A-T signals (max -30)
+  [[ "$GEO_PAGE_ABOUT" == false ]]   && score=$((score - 12))
+  [[ "$GEO_PAGE_CONTACT" == false ]] && score=$((score - 8))
+  [[ "$GEO_AUTHOR_VISIBLE" == false ]] && score=$((score - 5))
+  [[ "$GEO_DATE_VISIBLE" == false ]]   && score=$((score - 3))
+  [[ "$GEO_SCHEMA_ORG" == true && "$GEO_SCHEMA_ORG_NAME_OK" == false ]] && score=$((score - 1))
+  [[ "$GEO_SCHEMA_ORG" == true && "$GEO_SCHEMA_SAMAS_EMPTY" == true ]]  && score=$((score - 1))
+
+  # Content signals by site type (max -30)
+  case "$GEO_SITE_TYPE" in
+    ecommerce)
+      [[ "$GEO_SCHEMA_PRODUCT" == false ]] && score=$((score - 15))
+      [[ "$GEO_SCHEMA_REVIEW" == false ]]  && score=$((score - 8))
+      [[ "$GEO_SCHEMA_FAQ" == false ]]     && score=$((score - 4))
+      [[ "$GEO_SCHEMA_SPEAKABLE" == false ]] && score=$((score - 3))
+      ;;
+    blog)
+      [[ "$GEO_SCHEMA_ARTICLE" == false ]] && score=$((score - 15))
+      [[ "$GEO_SCHEMA_FAQ" == false ]]     && score=$((score - 8))
+      [[ "$GEO_SCHEMA_HOWTO" == false ]]   && score=$((score - 4))
+      [[ "$GEO_SCHEMA_SPEAKABLE" == false ]] && score=$((score - 3))
+      ;;
+    landing|onepager)
+      [[ "$GEO_SCHEMA_FAQ" == false ]]     && score=$((score - 12))
+      [[ "$GEO_SCHEMA_ORG" == false ]]     && score=$((score - 8))
+      [[ "$GEO_SCHEMA_SPEAKABLE" == false ]] && score=$((score - 5))
+      [[ "$GEO_SCHEMA_HOWTO" == false ]]   && score=$((score - 5))
+      ;;
+    *)
+      [[ "$GEO_SCHEMA_FAQ" == false ]]     && score=$((score - 12))
+      [[ "$GEO_SCHEMA_ORG" == false ]]     && score=$((score - 8))
+      [[ "$GEO_SCHEMA_ARTICLE" == false ]] && score=$((score - 5))
+      [[ "$GEO_SCHEMA_SPEAKABLE" == false ]] && score=$((score - 5))
+      ;;
+  esac
+  (( GEO_STRUCTURED_PCT < 30 )) && score=$((score - 3))
+  (( GEO_AUTH_LINKS == 0 ))     && score=$((score - 3))
+  (( score < 0 )) && score=0
+
+  set_score "geo" "$score"; SCORE_GEO=$score
+
+  # ── Per-engine scores ──────────────────────────────────────────────────────
+  local _cg=100
+  [[ "$GEO_BOT_CHATGPT" == false ]] && _cg=$((_cg - 50))
+  [[ "$GEO_SCHEMA_FAQ" == false ]]  && _cg=$((_cg - 20))
+  [[ "$GEO_LLMS_TXT" == false ]]    && _cg=$((_cg - 10))
+  [[ "$GEO_PAGE_ABOUT" == false ]]  && _cg=$((_cg - 10))
+  [[ "$GEO_PAGE_CONTACT" == false ]] && _cg=$((_cg - 10))
+  (( _cg < 0 )) && _cg=0; GEO_ENGINE_CHATGPT=$_cg
+
+  local _gm=100
+  [[ "$GEO_BOT_GEMINI" == false ]]       && _gm=$((_gm - 35))
+  [[ "$GEO_PAGE_ABOUT" == false ]]       && _gm=$((_gm - 20))
+  [[ "$GEO_PAGE_CONTACT" == false ]]     && _gm=$((_gm - 12))
+  [[ "$GEO_SCHEMA_FAQ" == false ]]       && _gm=$((_gm - 15))
+  [[ "$GEO_SCHEMA_SPEAKABLE" == false ]] && _gm=$((_gm - 8))
+  [[ "$GEO_AUTHOR_VISIBLE" == false ]]   && _gm=$((_gm - 5))
+  [[ "$GEO_DATE_VISIBLE" == false ]]     && _gm=$((_gm - 5))
+  (( _gm < 0 )) && _gm=0; GEO_ENGINE_GEMINI=$_gm
+
+  local _cl=100
+  [[ "$GEO_BOT_CLAUDE" == false ]]     && _cl=$((_cl - 35))
+  [[ "$GEO_LLMS_TXT" == false ]]       && _cl=$((_cl - 20))
+  [[ "$GEO_PAGE_ABOUT" == false ]]     && _cl=$((_cl - 18))
+  [[ "$GEO_PAGE_CONTACT" == false ]]   && _cl=$((_cl - 10))
+  (( GEO_AUTH_LINKS == 0 ))            && _cl=$((_cl - 10))
+  [[ "$GEO_AUTHOR_VISIBLE" == false ]] && _cl=$((_cl - 7))
+  (( _cl < 0 )) && _cl=0; GEO_ENGINE_CLAUDE=$_cl
+
+  local _px=100
+  [[ "$GEO_BOT_PERPLEXITY" == false ]] && _px=$((_px - 35))
+  [[ "$GEO_DATE_VISIBLE" == false ]]   && _px=$((_px - 20))
+  (( GEO_STRUCTURED_PCT < 30 ))        && _px=$((_px - 18))
+  (( GEO_AUTH_LINKS == 0 ))            && _px=$((_px - 15))
+  [[ "$GEO_SCHEMA_FAQ" == false ]]     && _px=$((_px - 12))
+  (( _px < 0 )) && _px=0; GEO_ENGINE_PERPLEXITY=$_px
+
+  ok "GEO analizado — Score: ${score}/100 · Tipo de sitio: ${GEO_SITE_TYPE}"
+}
+
 # ─── Tecnología: fingerprinting bash + webanalyze opcional ───────────────────
 analyze_tecnologia() {
   step "Detectando stack tecnológico"
@@ -1157,7 +1371,7 @@ analyze_legal() {
 # ─── Score global ─────────────────────────────────────────────────────────────
 compute_global_score() {
   local total=0 weight_sum=0
-  local keys="performance:20 seo:15 accesibilidad:15 seguridad:15 ciberseguridad:10 calidad_tecnica:10 diseno:8 ux:7"
+  local keys="performance:19 seo:14 geo:8 accesibilidad:14 seguridad:14 ciberseguridad:9 calidad_tecnica:9 diseno:7 ux:6"
   for pair in $keys; do
     local key="${pair%%:*}" w="${pair##*:}"
     local s; s=$(get_score "$key")
@@ -1289,6 +1503,18 @@ compute_dimension_contexts() {
   elif (( ${SCORE_UX:-0} >= 60 )); then CTX_UX="UX funcional con elementos faltantes. ${u_issues}"
   else                                   CTX_UX="UX deficiente — impacto directo en conversión. ${u_issues}"
   fi
+
+  # GEO
+  local g_issues=""
+  [[ "$GEO_PAGE_ABOUT" == false ]]     && g_issues="${g_issues}Sin página Quiénes somos. "
+  [[ "$GEO_PAGE_CONTACT" == false ]]   && g_issues="${g_issues}Sin página de contacto. "
+  [[ "$GEO_SCHEMA_FAQ" == false ]]     && g_issues="${g_issues}Sin preguntas estructuradas para IA. "
+  [[ "$GEO_LLMS_TXT" == false ]]       && g_issues="${g_issues}Sin guía de contenido para IA. "
+  [[ "$GEO_BOT_CHATGPT" == false ]]    && g_issues="${g_issues}ChatGPT bloqueado. "
+  if   (( ${SCORE_GEO:-0} >= 75 )); then CTX_GEO="Buena visibilidad en buscadores de IA. ${g_issues:-Señales clave presentes.}"
+  elif (( ${SCORE_GEO:-0} >= 50 )); then CTX_GEO="Visibilidad parcial en IA. ${g_issues}"
+  else                                   CTX_GEO="Visibilidad crítica en IA generativa. ${g_issues}"
+  fi
 }
 
 # ─── Generate report ──────────────────────────────────────────────────────────
@@ -1298,19 +1524,19 @@ generate_report() {
   local global_badge; global_badge=$(score_badge "$SCORE_GLOBAL")
 
   # Pre-computar benchmarks por sector (fuera del heredoc)
-  local bp bs ba bsec bcy bct bd bu tp ts ta tsec tcy tct td tu
+  local bp bs ba bsec bcy bct bd bu tp ts ta tsec tcy tct td tu bgeo tgeo
   case "${SECTOR:-general}" in
-    ecommerce) bp=72 bs=75 ba=58 bsec=55 bcy=50 bct=65 bd=70 bu=75
+    ecommerce) bp=72 bs=75 ba=58 bsec=55 bcy=50 bct=65 bd=70 bu=75 bgeo=40 tgeo=80
                tp=92 ts=92 ta=85 tsec=88 tcy=82 tct=88 td=92 tu=92 ;;
-    saas)      bp=70 bs=68 ba=60 bsec=65 bcy=58 bct=70 bd=65 bu=70
+    saas)      bp=70 bs=68 ba=60 bsec=65 bcy=58 bct=70 bd=65 bu=70 bgeo=45 tgeo=82
                tp=92 ts=88 ta=88 tsec=92 tcy=85 tct=90 td=88 tu=90 ;;
-    blog)      bp=68 bs=80 ba=55 bsec=48 bcy=42 bct=62 bd=60 bu=62
+    blog)      bp=68 bs=80 ba=55 bsec=48 bcy=42 bct=62 bd=60 bu=62 bgeo=38 tgeo=78
                tp=90 ts=95 ta=82 tsec=80 tcy=75 tct=85 td=85 tu=85 ;;
-    landing)   bp=75 bs=70 ba=55 bsec=50 bcy=45 bct=60 bd=72 bu=78
+    landing)   bp=75 bs=70 ba=55 bsec=50 bcy=45 bct=60 bd=72 bu=78 bgeo=35 tgeo=75
                tp=95 ts=90 ta=82 tsec=85 tcy=80 tct=85 td=92 tu=92 ;;
-    portfolio) bp=65 bs=65 ba=55 bsec=48 bcy=42 bct=62 bd=80 bu=70
+    portfolio) bp=65 bs=65 ba=55 bsec=48 bcy=42 bct=62 bd=80 bu=70 bgeo=32 tgeo=70
                tp=90 ts=85 ta=82 tsec=80 tcy=75 tct=85 td=95 tu=90 ;;
-    *)         bp=65 bs=70 ba=55 bsec=50 bcy=45 bct=60 bd=65 bu=60
+    *)         bp=65 bs=70 ba=55 bsec=50 bcy=45 bct=60 bd=65 bu=60 bgeo=35 tgeo=75
                tp=90 ts=90 ta=85 tsec=90 tcy=85 tct=85 td=90 tu=88 ;;
   esac
 
@@ -1359,6 +1585,7 @@ fi)
 \`\`\`
 Performance      $(ascii_bar $SCORE_PERFORMANCE) ${SCORE_PERFORMANCE}/100
 SEO              $(ascii_bar $SCORE_SEO)          ${SCORE_SEO}/100
+GEO              $(ascii_bar $SCORE_GEO)           ${SCORE_GEO}/100
 Accesibilidad    $(ascii_bar $SCORE_ACCESIBILIDAD) ${SCORE_ACCESIBILIDAD}/100
 Seguridad        $(ascii_bar $SCORE_SEGURIDAD)    ${SCORE_SEGURIDAD}/100
 Ciberseguridad   $(ascii_bar $SCORE_CIBERSEGURIDAD) ${SCORE_CIBERSEGURIDAD}/100
@@ -1382,6 +1609,7 @@ fi)
 |-----------|------:|--------|---------|
 | ⚡ Performance     | **${SCORE_PERFORMANCE}/100**     | $(score_badge $SCORE_PERFORMANCE) | ${CTX_PERFORMANCE} |
 | 🔍 SEO             | **${SCORE_SEO}/100**             | $(score_badge $SCORE_SEO) | ${CTX_SEO} |
+| 🤖 GEO             | **${SCORE_GEO}/100**             | $(score_badge $SCORE_GEO) | ${CTX_GEO} |
 | ♿ Accesibilidad   | **${SCORE_ACCESIBILIDAD}/100**   | $(score_badge $SCORE_ACCESIBILIDAD) | ${CTX_ACCESIBILIDAD} |
 | 🔒 Seguridad       | **${SCORE_SEGURIDAD}/100**       | $(score_badge $SCORE_SEGURIDAD) | ${CTX_SEGURIDAD} |
 | 🛡️ Ciberseguridad | **${SCORE_CIBERSEGURIDAD}/100**  | $(score_badge $SCORE_CIBERSEGURIDAD) | ${CTX_CIBERSEGURIDAD} |
@@ -1397,6 +1625,7 @@ fi)
 |-----------|:--------:|:--------------:|:-------:|
 | Performance | ${SCORE_PERFORMANCE} | ${bp} | ${tp}+ |
 | SEO | ${SCORE_SEO} | ${bs} | ${ts}+ |
+| GEO | ${SCORE_GEO} | ${bgeo} | ${tgeo}+ |
 | Accesibilidad | ${SCORE_ACCESIBILIDAD} | ${ba} | ${ta}+ |
 | Seguridad | ${SCORE_SEGURIDAD} | ${bsec} | ${tsec}+ |
 | Ciberseguridad | ${SCORE_CIBERSEGURIDAD} | ${bcy} | ${tcy}+ |
@@ -1506,7 +1735,90 @@ $([ -n "${SEO_LH_DESKTOP:-}" ] && echo "| Lighthouse SEO 🖥️ Desktop | ✅ $
 
 ---
 
-### ♿ 3. Accesibilidad — ${SCORE_ACCESIBILIDAD}/100 $(score_badge $SCORE_ACCESIBILIDAD)
+### 🤖 3. GEO — Visibilidad en IA Generativa — ${SCORE_GEO}/100 $(score_badge $SCORE_GEO)
+
+> ${CTX_GEO}
+
+#### ¿Cómo te ven los buscadores de IA?
+
+| Buscador | Score | Situación |
+|----------|-------|-----------|
+| ChatGPT | **${GEO_ENGINE_CHATGPT}/100** | $([ "${GEO_BOT_CHATGPT}" == "false" ] && echo "❌ Bloqueado — invisible para ChatGPT" || ([ "${GEO_SCHEMA_FAQ}" != "true" ] && echo "⚠️ Acceso OK · Sin preguntas estructuradas" || echo "✅ Bien posicionado")) |
+| Gemini | **${GEO_ENGINE_GEMINI}/100** | $([ "${GEO_PAGE_ABOUT}" == "false" ] && echo "⚠️ Sin página Quiénes somos — E-E-A-T débil" || ([ "${GEO_SCHEMA_FAQ}" != "true" ] && echo "⚠️ Sin preguntas estructuradas para AI Overviews" || echo "✅ Bien posicionado")) |
+| Claude | **${GEO_ENGINE_CLAUDE}/100** | $([ "${GEO_LLMS_TXT}" == "false" ] && echo "⚠️ Sin guía de contenido prioritario" || echo "✅ Bien configurado") |
+| Perplexity | **${GEO_ENGINE_PERPLEXITY}/100** | $([ "${GEO_DATE_VISIBLE}" == "false" ] && echo "⚠️ Sin fecha visible — frescura no verificable" || echo "✅ Acceso y contenido correctos") |
+
+#### Acceso — ¿pueden los buscadores de IA leer el sitio?
+
+| Señal | Estado | Qué significa |
+|-------|--------|---------------|
+| ChatGPT puede leer el sitio | $([ "$GEO_BOT_CHATGPT" == "true" ] && echo "✅ Sí" || echo "❌ Bloqueado") | ChatGPT Browse puede incluir este contenido en sus respuestas |
+| Gemini puede leer el sitio | $([ "$GEO_BOT_GEMINI" == "true" ] && echo "✅ Sí" || echo "❌ Bloqueado") | Google AI Overviews puede indexar y citar el contenido |
+| Claude puede leer el sitio | $([ "$GEO_BOT_CLAUDE" == "true" ] && echo "✅ Sí" || echo "❌ Bloqueado") | Claude con búsqueda web puede referenciar el sitio |
+| Perplexity puede leer el sitio | $([ "$GEO_BOT_PERPLEXITY" == "true" ] && echo "✅ Sí" || echo "❌ Bloqueado") | Perplexity puede incluir el sitio en resultados en tiempo real |
+| Guía de contenido para IA (/llms.txt) | $([ "$GEO_LLMS_TXT" == "true" ] && echo "✅ Existe" || echo "❌ Ausente") | Indica a los motores de IA qué páginas priorizar |
+| Tipo de sitio detectado | ℹ️ ${GEO_SITE_TYPE} | Determina qué señales de contenido son prioritarias |
+
+#### Confianza — ¿pueden verificar quién está detrás del sitio?
+
+| Señal | Estado | Qué significa |
+|-------|--------|---------------|
+| Página "Quiénes somos" | $([ "$GEO_PAGE_ABOUT" == "true" ] && echo "✅ Existe" || echo "❌ No existe") | Gemini y Claude necesitan saber quién opera el sitio |
+| Página de contacto | $([ "$GEO_PAGE_CONTACT" == "true" ] && echo "✅ Existe" || echo "❌ No existe") | Sin contacto público, el sitio pierde credibilidad ante la IA |
+| Autor visible en el contenido | $([ "$GEO_AUTHOR_VISIBLE" == "true" ] && echo "✅ Detectado" || echo "❌ No detectado") | Los motores de IA usan la autoría para evaluar credibilidad |
+| Fecha de publicación visible | $([ "$GEO_DATE_VISIBLE" == "true" ] && echo "✅ Detectada" || echo "❌ No detectada") | Perplexity prioriza contenido con fecha clara y reciente |
+| Nombre de empresa correcto en schema | $([ "$GEO_SCHEMA_ORG_NAME_OK" == "true" ] && echo "✅ Correcto" || ([ "$GEO_SCHEMA_ORG" == "true" ] && echo "⚠️ Revisar" || echo "➖ Sin schema")) | Permite a la IA identificar la entidad correctamente |
+| Perfiles sociales enlazados | $([ "$GEO_SCHEMA_SAMAS_EMPTY" == "false" ] && echo "✅ Enlazados" || echo "⚠️ Vacío o ausente") | La IA verifica la presencia oficial en redes |
+| Redes sociales visibles en el sitio | $([ "$GEO_SOCIAL_LINKS" == "true" ] && echo "✅ Detectadas" || echo "❌ Ausentes") | Señal adicional de presencia verificable |
+
+#### Contenido — ¿pueden extraer y citar respuestas?
+
+| Señal | Estado | Qué significa |
+|-------|--------|---------------|
+$(if [[ "$GEO_SITE_TYPE" == "ecommerce" ]]; then
+    echo "| Productos marcados para IA (schema) | $([ "$GEO_SCHEMA_PRODUCT" == "true" ] && echo "✅ Sí" || echo "❌ No") | Principal señal para citación en e-commerce |"
+    echo "| Reseñas estructuradas | $([ "$GEO_SCHEMA_REVIEW" == "true" ] && echo "✅ Sí" || echo "❌ No") | ChatGPT y Gemini extraen ratings de schema Review |"
+  elif [[ "$GEO_SITE_TYPE" == "blog" ]]; then
+    echo "| Artículos con autoría estructurada | $([ "$GEO_SCHEMA_ARTICLE" == "true" ] && echo "✅ Sí" || echo "❌ No") | Principal señal editorial para buscadores de IA |"
+fi)
+| Preguntas y respuestas estructuradas | $([ "$GEO_SCHEMA_FAQ" == "true" ] && echo "✅ Sí" || echo "❌ No") | Principal factor de citación en ChatGPT y Gemini AI Overviews |
+| Guías paso a paso estructuradas | $([ "$GEO_SCHEMA_HOWTO" == "true" ] && echo "✅ Sí" || echo "❌ No") | Tutoriales optimizados para respuestas de IA |
+| Fragmentos destacados para voz | $([ "$GEO_SCHEMA_SPEAKABLE" == "true" ] && echo "✅ Sí" || echo "❌ No") | Gemini y asistentes de voz extraen estos fragmentos |
+| Contenido en listas y tablas | $([ $GEO_STRUCTURED_PCT -ge 40 ] && echo "✅ ${GEO_STRUCTURED_PCT}%" || ([ $GEO_STRUCTURED_PCT -ge 25 ] && echo "⚠️ ${GEO_STRUCTURED_PCT}%" || echo "❌ ${GEO_STRUCTURED_PCT}%")) | Las IA prefieren contenido estructurado (meta: >40%) |
+| Referencias a fuentes reconocidas | $([ $GEO_AUTH_LINKS -gt 0 ] && echo "✅ ${GEO_AUTH_LINKS} de ${GEO_EXT_LINKS_TOTAL}" || echo "❌ 0 de ${GEO_EXT_LINKS_TOTAL}") | Citar fuentes verificables aumenta la confiabilidad ante la IA |
+
+#### 💡 Plan de mejora para IA Generativa
+
+$(
+  _geo_rec=0
+  [ "$GEO_PAGE_ABOUT" == "false" ] && _geo_rec=$((_geo_rec+1)) && echo "**${_geo_rec}. Crear página \"Quiénes somos\"** — *Afecta: Gemini, Claude*"
+  [ "$GEO_PAGE_ABOUT" == "false" ] && echo "> Las IA necesitan saber quién opera el sitio para citarlo como fuente confiable. Es el cambio de mayor impacto relativo a su esfuerzo. *(Técnico: E-E-A-T — About page)*"
+  [ "$GEO_PAGE_ABOUT" == "false" ] && echo ""
+  [ "$GEO_PAGE_CONTACT" == "false" ] && _geo_rec=$((_geo_rec+1)) && echo "**${_geo_rec}. Crear página de contacto** — *Afecta: Gemini, Claude, ChatGPT*"
+  [ "$GEO_PAGE_CONTACT" == "false" ] && echo "> Sin contacto público verificable, el sitio es penalizado por todos los motores de IA. *(Técnico: E-E-A-T — Contact page)*"
+  [ "$GEO_PAGE_CONTACT" == "false" ] && echo ""
+  [ "$GEO_SCHEMA_FAQ" == "false" ] && _geo_rec=$((_geo_rec+1)) && echo "**${_geo_rec}. Agregar preguntas y respuestas estructuradas** — *Afecta: ChatGPT, Gemini*"
+  [ "$GEO_SCHEMA_FAQ" == "false" ] && echo "> Es el factor individual más importante para aparecer en respuestas de ChatGPT y en AI Overviews de Gemini. *(Técnico: FAQPage schema)*"
+  [ "$GEO_SCHEMA_FAQ" == "false" ] && echo ""
+  [ "$GEO_LLMS_TXT" == "false" ] && _geo_rec=$((_geo_rec+1)) && echo "**${_geo_rec}. Crear guía de contenido para IA (/llms.txt)** — *Afecta: ChatGPT, Claude*"
+  [ "$GEO_LLMS_TXT" == "false" ] && echo "> Indica a los motores de IA qué páginas son prioritarias. Equivalente moderno del sitemap para IA generativa."
+  [ "$GEO_LLMS_TXT" == "false" ] && echo ""
+  [ "$GEO_AUTHOR_VISIBLE" == "false" ] && _geo_rec=$((_geo_rec+1)) && echo "**${_geo_rec}. Mostrar autor visible en el contenido** — *Afecta: Gemini, Claude*"
+  [ "$GEO_AUTHOR_VISIBLE" == "false" ] && echo "> Los motores de IA evalúan la credibilidad del contenido basándose en quién lo escribe. *(Técnico: Article schema + byline visible)*"
+  [ "$GEO_AUTHOR_VISIBLE" == "false" ] && echo ""
+  [ "$GEO_DATE_VISIBLE" == "false" ] && _geo_rec=$((_geo_rec+1)) && echo "**${_geo_rec}. Mostrar fecha de publicación visible** — *Afecta: Perplexity*"
+  [ "$GEO_DATE_VISIBLE" == "false" ] && echo "> Perplexity prioriza contenido con fecha clara. Usar \`<time datetime=\"YYYY-MM-DD\">\` visible en el HTML. *(Técnico: datePublished en DOM)*"
+  [ "$GEO_DATE_VISIBLE" == "false" ] && echo ""
+  [ "$GEO_SCHEMA_SPEAKABLE" == "false" ] && _geo_rec=$((_geo_rec+1)) && echo "**${_geo_rec}. Agregar fragmentos destacados para voz** — *Afecta: Gemini*"
+  [ "$GEO_SCHEMA_SPEAKABLE" == "false" ] && echo "> Indica a Google Asistente y Gemini qué secciones son aptas para respuestas de voz. *(Técnico: Speakable schema)*"
+  [ $GEO_AUTH_LINKS -eq 0 ] && _geo_rec=$((_geo_rec+1)) && echo "**${_geo_rec}. Citar fuentes externas reconocidas** — *Afecta: Claude, Perplexity*"
+  [ $GEO_AUTH_LINKS -eq 0 ] && echo "> Citar fuentes verificables (.gov, .edu, publicaciones reconocidas) aumenta la confiabilidad del contenido ante la IA."
+  [ $_geo_rec -eq 0 ] && echo "> ✅ Todas las señales GEO principales están correctamente configuradas."
+)
+
+---
+
+### ♿ 4. Accesibilidad — ${SCORE_ACCESIBILIDAD}/100 $(score_badge $SCORE_ACCESIBILIDAD)
 
 > ${CTX_ACCESIBILIDAD}
 
@@ -1529,7 +1841,7 @@ $([ "${ACC_PA11Y_ERRORS:-0}" -gt 0 ] && echo "| pa11y errores | ⚠️ ${ACC_PA1
 
 ---
 
-### 🔒 4. Seguridad — ${SCORE_SEGURIDAD}/100 $(score_badge $SCORE_SEGURIDAD)
+### 🔒 5. Seguridad — ${SCORE_SEGURIDAD}/100 $(score_badge $SCORE_SEGURIDAD)
 
 > ${CTX_SEGURIDAD}
 
@@ -1589,7 +1901,7 @@ $([ -n "${SEC_SSLCHECK_RESULT:-}" ] && echo "| ssl-checker | \`${SEC_SSLCHECK_RE
 
 ---
 
-### 🛡️ 5. Ciberseguridad — ${SCORE_CIBERSEGURIDAD}/100 $(score_badge $SCORE_CIBERSEGURIDAD)
+### 🛡️ 6. Ciberseguridad — ${SCORE_CIBERSEGURIDAD}/100 $(score_badge $SCORE_CIBERSEGURIDAD)
 
 > ${CTX_CIBERSEGURIDAD}
 
@@ -1613,7 +1925,7 @@ $([ -n "${SEC_SSLCHECK_RESULT:-}" ] && echo "| ssl-checker | \`${SEC_SSLCHECK_RE
 
 ---
 
-### ⚙️ 6. Calidad Técnica — ${SCORE_CALIDAD_TECNICA}/100 $(score_badge $SCORE_CALIDAD_TECNICA)
+### ⚙️ 7. Calidad Técnica — ${SCORE_CALIDAD_TECNICA}/100 $(score_badge $SCORE_CALIDAD_TECNICA)
 
 > ${CTX_CALIDAD_TECNICA}
 
@@ -1641,7 +1953,7 @@ $([ "${CT_HTMLHINT_ERRORS:-0}" -gt 0 ] && echo "| htmlhint errores | ⚠️ ${CT
 
 ---
 
-### 🎨 7. Diseño — ${SCORE_DISENO}/100 $(score_badge $SCORE_DISENO)
+### 🎨 8. Diseño — ${SCORE_DISENO}/100 $(score_badge $SCORE_DISENO)
 
 > ${CTX_DISENO}
 
@@ -1660,7 +1972,7 @@ $([ -n "${DIS_LH_DESKTOP:-}" ] && echo "| Lighthouse Best Practices 🖥️ Desk
 
 ---
 
-### 👤 8. UX — ${SCORE_UX}/100 $(score_badge $SCORE_UX)
+### 👤 9. UX — ${SCORE_UX}/100 $(score_badge $SCORE_UX)
 
 > ${CTX_UX}
 
@@ -2078,14 +2390,14 @@ generate_json() {
   }
 
   # Benchmarks (same logic as generate_report)
-  local bp bs ba bsec bcy bct bd bu tp ts ta tsec tcy tct td tu
+  local bp bs ba bsec bcy bct bd bu tp ts ta tsec tcy tct td tu bgeo tgeo
   case "${SECTOR:-general}" in
-    ecommerce) bp=72 bs=75 ba=58 bsec=55 bcy=50 bct=65 bd=70 bu=75 tp=92 ts=92 ta=85 tsec=88 tcy=82 tct=88 td=92 tu=92 ;;
-    saas)      bp=70 bs=68 ba=60 bsec=65 bcy=58 bct=70 bd=65 bu=70 tp=92 ts=88 ta=88 tsec=92 tcy=85 tct=90 td=88 tu=90 ;;
-    blog)      bp=68 bs=80 ba=55 bsec=48 bcy=42 bct=62 bd=60 bu=62 tp=90 ts=95 ta=82 tsec=80 tcy=75 tct=85 td=85 tu=85 ;;
-    landing)   bp=75 bs=70 ba=55 bsec=50 bcy=45 bct=60 bd=72 bu=78 tp=95 ts=90 ta=82 tsec=85 tcy=80 tct=85 td=92 tu=92 ;;
-    portfolio) bp=65 bs=65 ba=55 bsec=48 bcy=42 bct=62 bd=80 bu=70 tp=90 ts=85 ta=82 tsec=80 tcy=75 tct=85 td=95 tu=90 ;;
-    *)         bp=65 bs=70 ba=55 bsec=50 bcy=45 bct=60 bd=65 bu=60 tp=90 ts=90 ta=85 tsec=90 tcy=85 tct=85 td=90 tu=88 ;;
+    ecommerce) bp=72 bs=75 ba=58 bsec=55 bcy=50 bct=65 bd=70 bu=75 bgeo=40 tgeo=80 tp=92 ts=92 ta=85 tsec=88 tcy=82 tct=88 td=92 tu=92 ;;
+    saas)      bp=70 bs=68 ba=60 bsec=65 bcy=58 bct=70 bd=65 bu=70 bgeo=45 tgeo=82 tp=92 ts=88 ta=88 tsec=92 tcy=85 tct=90 td=88 tu=90 ;;
+    blog)      bp=68 bs=80 ba=55 bsec=48 bcy=42 bct=62 bd=60 bu=62 bgeo=38 tgeo=78 tp=90 ts=95 ta=82 tsec=80 tcy=75 tct=85 td=85 tu=85 ;;
+    landing)   bp=75 bs=70 ba=55 bsec=50 bcy=45 bct=60 bd=72 bu=78 bgeo=35 tgeo=75 tp=95 ts=90 ta=82 tsec=85 tcy=80 tct=85 td=92 tu=92 ;;
+    portfolio) bp=65 bs=65 ba=55 bsec=48 bcy=42 bct=62 bd=80 bu=70 bgeo=32 tgeo=70 tp=90 ts=85 ta=82 tsec=80 tcy=75 tct=85 td=95 tu=90 ;;
+    *)         bp=65 bs=70 ba=55 bsec=50 bcy=45 bct=60 bd=65 bu=60 bgeo=35 tgeo=75 tp=90 ts=90 ta=85 tsec=90 tcy=85 tct=85 td=90 tu=88 ;;
   esac
 
   # ISO timestamp
@@ -2164,7 +2476,7 @@ generate_json() {
     done <<< "$(echo "$DIMENSIONS" | tr ',' '\n')"
     json_dimensions_run="${json_dimensions_run}]"
   else
-    json_dimensions_run='["performance","seo","accesibilidad","seguridad","ciberseguridad","calidad_tecnica","diseno","ux"]'
+    json_dimensions_run='["performance","seo","geo","accesibilidad","seguridad","ciberseguridad","calidad_tecnica","diseno","ux"]'
   fi
 
   # Findings builder
@@ -2254,6 +2566,20 @@ generate_json() {
   [[ "${UX_RESPONSIVE:-false}" != "true" ]] && _fa "critico" "responsive" "false" "Sin señales de diseño responsive" "Implementar media queries y diseño adaptable"
   local JSON_F_UX="[${_fj}]"
 
+  # GEO findings
+  _fj=""
+  [[ "${GEO_PAGE_ABOUT:-false}" != "true" ]] && _fa "critico" "pagina_empresa" "404" "Sin página Quiénes somos — E-E-A-T crítico para Gemini y Claude" "Crear página /nosotros o /about con información real de la empresa"
+  [[ "${GEO_PAGE_CONTACT:-false}" != "true" ]] && _fa "critico" "pagina_contacto" "404" "Sin página de contacto — penaliza en todos los motores de IA" "Crear página /contacto o /contact con email, teléfono o formulario"
+  [[ "${GEO_BOT_CHATGPT:-true}" == "false" ]] && _fa "critico" "gptbot_bloqueado" "Disallow: /" "GPTBot bloqueado — el sitio es invisible para ChatGPT" "Eliminar la restricción de GPTBot en robots.txt"
+  [[ "${GEO_BOT_GEMINI:-true}" == "false" ]] && _fa "critico" "googlebot_bloqueado" "Disallow: /" "Googlebot bloqueado — el sitio es invisible para Gemini AI" "Revisar reglas de robots.txt para Googlebot"
+  [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]] && _fa "alto" "faq_schema" "false" "Sin preguntas estructuradas — principal factor de citación en ChatGPT y Gemini" "Implementar FAQPage schema con preguntas y respuestas del negocio"
+  [[ "${GEO_LLMS_TXT:-false}" != "true" ]] && _fa "alto" "llms_txt" "404" "Sin guía de contenido para IA (/llms.txt)" "Crear /llms.txt con descripción y URLs prioritarias del sitio"
+  [[ "${GEO_AUTHOR_VISIBLE:-false}" != "true" ]] && _fa "medio" "autor_visible" "false" "Sin autor visible — reduce credibilidad del contenido ante la IA" "Añadir byline visible y Article schema con autor"
+  [[ "${GEO_DATE_VISIBLE:-false}" != "true" ]] && _fa "medio" "fecha_visible" "false" "Sin fecha visible — Perplexity no puede verificar frescura del contenido" "Usar <time datetime='YYYY-MM-DD'> visible en el HTML"
+  [[ "${GEO_SCHEMA_SPEAKABLE:-false}" != "true" ]] && _fa "medio" "speakable_schema" "false" "Sin fragmentos para voz — Gemini no puede extraer respuestas de voz" "Implementar Speakable schema en secciones clave"
+  (( ${GEO_AUTH_LINKS:-0} == 0 )) && _fa "bajo" "links_autoritativos" "0" "Sin referencias a fuentes reconocidas — reduce confiabilidad ante IA" "Citar fuentes externas verificables (.gov, .edu, publicaciones reconocidas)"
+  local JSON_F_GEO="[${_fj}]"
+
   # Legal findings
   _fj=""
   [[ "${LEGAL_PRIVACY:-false}" != "true" ]] && _fa "critico" "privacy_policy" "false" "Política de privacidad ausente — riesgo GDPR Art.13" "Publicar política de privacidad accesible desde el footer"
@@ -2294,6 +2620,8 @@ generate_json() {
   echo "${PERF_COMPRESSION:-}" | grep -qi "gzip\|br\|deflate" || _at1 "Activar compresión Gzip/Brotli"
   [ "${SEO_TITLE:-}"              == "AUSENTE" ] && _at1 "Añadir <title> único a todas las páginas"
   [ "${CT_MIXED_CONTENT:-false}"  == "true"    ] && _at1 "Eliminar recursos HTTP en página HTTPS"
+  [[ "${GEO_PAGE_ABOUT:-false}" != "true" ]] && _at1 "Crear página Quiénes somos (GEO — E-E-A-T)"
+  [[ "${GEO_PAGE_CONTACT:-false}" != "true" ]] && _at1 "Crear página de contacto (GEO — E-E-A-T)"
   [[ -z "$_s1" ]] && _at1 "Mantener estándares actuales — sin críticos detectados"
   [ "${SEO_META_DESC:-}"          == "AUSENTE" ] && _at2 "Crear meta descriptions únicas (120-160 chars)"
   [ "${SEO_ROBOTS:-}"              != "200"    ] && _at2 "Crear robots.txt en la raíz del sitio"
@@ -2305,6 +2633,8 @@ generate_json() {
   [ "$CYBER_DKIM"  == "AUSENTE" ] && _at2 "Configurar DKIM en el servidor de correo"
   [ "${LEGAL_COOKIES:-false}"      != "true"   ] && _at2 "Implementar banner de cookies GDPR"
   [ "${LEGAL_PRIVACY:-false}"      != "true"   ] && _at2 "Publicar política de privacidad"
+  [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]] && _at2 "Implementar FAQPage schema (GEO — ChatGPT/Gemini)"
+  [[ "${GEO_LLMS_TXT:-false}" != "true" ]] && _at2 "Crear /llms.txt con páginas prioritarias (GEO — IA)"
   [[ -z "$_s2" ]] && _at2 "Revisar métricas Core Web Vitals y optimizar LCP"
   [ "${SEO_SCHEMA:-false}"        != "true"    ] && _at3 "Implementar Schema.org (structured data)"
   [ "${CT_PWA_MANIFEST:-false}"   != "true"    ] && _at3 "Crear manifest.json para soporte PWA"
@@ -2418,6 +2748,7 @@ generate_json() {
     "global": ${SCORE_GLOBAL:-0},
     "performance": ${SCORE_PERFORMANCE:-0},
     "seo": ${SCORE_SEO:-0},
+    "geo": ${SCORE_GEO:-0},
     "accesibilidad": ${SCORE_ACCESIBILIDAD:-0},
     "seguridad": ${SCORE_SEGURIDAD:-0},
     "ciberseguridad": ${SCORE_CIBERSEGURIDAD:-0},
@@ -2428,8 +2759,8 @@ generate_json() {
   },
   "benchmarks": {
     "sector": "$(_je "${SECTOR:-general}")",
-    "average": { "performance": ${bp}, "seo": ${bs}, "accesibilidad": ${ba}, "seguridad": ${bsec}, "ciberseguridad": ${bcy}, "calidad_tecnica": ${bct}, "diseno": ${bd}, "ux": ${bu} },
-    "top":     { "performance": ${tp}, "seo": ${ts}, "accesibilidad": ${ta}, "seguridad": ${tsec}, "ciberseguridad": ${tcy}, "calidad_tecnica": ${tct}, "diseno": ${td}, "ux": ${tu} }
+    "average": { "performance": ${bp}, "seo": ${bs}, "geo": ${bgeo}, "accesibilidad": ${ba}, "seguridad": ${bsec}, "ciberseguridad": ${bcy}, "calidad_tecnica": ${bct}, "diseno": ${bd}, "ux": ${bu} },
+    "top":     { "performance": ${tp}, "seo": ${ts}, "geo": ${tgeo}, "accesibilidad": ${ta}, "seguridad": ${tsec}, "ciberseguridad": ${tcy}, "calidad_tecnica": ${tct}, "diseno": ${td}, "ux": ${tu} }
   },
   "performance": {
     "response_ms": ${PERF_RESP_MS:-0},
@@ -2463,6 +2794,48 @@ generate_json() {
     "favicon": "$(_je "${SITE_FAVICON:-}")",
     "word_count": ${SEO_WORD_COUNT:-0}, "last_modified": "$(_je "${SEO_LAST_MODIFIED:-}")",
     "lighthouse": { "mobile": ${SEO_LH_MOBILE:-null}, "desktop": ${SEO_LH_DESKTOP:-null} }
+  },
+  "geo": {
+    "score": ${SCORE_GEO:-0},
+    "site_type": "$(_je "${GEO_SITE_TYPE:-institucional}")",
+    "context": "$(_je "${CTX_GEO:-}")",
+    "engines": {
+      "chatgpt":    { "score": ${GEO_ENGINE_CHATGPT:-0},    "estado": "$([ ${GEO_ENGINE_CHATGPT:-0} -ge 70 ] && echo 'bien' || ([ ${GEO_ENGINE_CHATGPT:-0} -ge 40 ] && echo 'parcial' || echo 'critico'))" },
+      "gemini":     { "score": ${GEO_ENGINE_GEMINI:-0},     "estado": "$([ ${GEO_ENGINE_GEMINI:-0} -ge 70 ] && echo 'bien' || ([ ${GEO_ENGINE_GEMINI:-0} -ge 40 ] && echo 'parcial' || echo 'critico'))" },
+      "claude":     { "score": ${GEO_ENGINE_CLAUDE:-0},     "estado": "$([ ${GEO_ENGINE_CLAUDE:-0} -ge 70 ] && echo 'bien' || ([ ${GEO_ENGINE_CLAUDE:-0} -ge 40 ] && echo 'parcial' || echo 'critico'))" },
+      "perplexity": { "score": ${GEO_ENGINE_PERPLEXITY:-0}, "estado": "$([ ${GEO_ENGINE_PERPLEXITY:-0} -ge 70 ] && echo 'bien' || ([ ${GEO_ENGINE_PERPLEXITY:-0} -ge 40 ] && echo 'parcial' || echo 'critico'))" }
+    },
+    "acceso": {
+      "chatgpt":    $(_jb "${GEO_BOT_CHATGPT:-false}"),
+      "gemini":     $(_jb "${GEO_BOT_GEMINI:-false}"),
+      "claude":     $(_jb "${GEO_BOT_CLAUDE:-false}"),
+      "perplexity": $(_jb "${GEO_BOT_PERPLEXITY:-false}"),
+      "llms_txt":   $(_jb "${GEO_LLMS_TXT:-false}")
+    },
+    "confianza": {
+      "pagina_empresa":         $(_jb "${GEO_PAGE_ABOUT:-false}"),
+      "pagina_contacto":        $(_jb "${GEO_PAGE_CONTACT:-false}"),
+      "autor_visible":          $(_jb "${GEO_AUTHOR_VISIBLE:-false}"),
+      "fecha_visible":          $(_jb "${GEO_DATE_VISIBLE:-false}"),
+      "nombre_empresa_correcto": $(_jb "${GEO_SCHEMA_ORG_NAME_OK:-false}"),
+      "perfiles_sociales":      $(_jb "$([ "${GEO_SCHEMA_SAMAS_EMPTY:-true}" == "false" ] && echo true || echo false)"),
+      "redes_en_sitio":         $(_jb "${GEO_SOCIAL_LINKS:-false}")
+    },
+    "contenido": {
+      "preguntas_estructuradas":  $(_jb "${GEO_SCHEMA_FAQ:-false}"),
+      "guias_estructuradas":      $(_jb "${GEO_SCHEMA_HOWTO:-false}"),
+      "fragmentos_voz":           $(_jb "${GEO_SCHEMA_SPEAKABLE:-false}"),
+      "articulos_con_autor":      $(_jb "${GEO_SCHEMA_ARTICLE:-false}"),
+      "productos_marcados":       $(_jb "${GEO_SCHEMA_PRODUCT:-false}"),
+      "resenas_estructuradas":    $(_jb "${GEO_SCHEMA_REVIEW:-false}"),
+      "contenido_estructurado_pct": ${GEO_STRUCTURED_PCT:-0},
+      "listas_detectadas":        ${GEO_LI_COUNT:-0},
+      "tablas_detectadas":        ${GEO_TABLE_COUNT:-0},
+      "palabras":                 ${GEO_WORD_COUNT:-0},
+      "links_externos":           ${GEO_EXT_LINKS_TOTAL:-0},
+      "links_autoritativos":      ${GEO_AUTH_LINKS:-0},
+      "links_autoritativos_pct":  ${GEO_AUTH_LINKS_PCT:-0}
+    }
   },
   "accesibilidad": {
     "images_total": ${ACC_IMGS_TOTAL:-0}, "images_without_alt": ${ACC_IMGS_NO_ALT:-0},
@@ -2555,7 +2928,8 @@ generate_json() {
   },
   "screenshots": { "mobile": ${json_ss_mobile}, "desktop": ${json_ss_desktop} },
   "findings": {
-    "performance": ${JSON_F_PERF}, "seo": ${JSON_F_SEO}, "accesibilidad": ${JSON_F_ACC},
+    "performance": ${JSON_F_PERF}, "seo": ${JSON_F_SEO}, "geo": ${JSON_F_GEO},
+    "accesibilidad": ${JSON_F_ACC},
     "seguridad": ${JSON_F_SEC}, "ciberseguridad": ${JSON_F_CYBER}, "calidad_tecnica": ${JSON_F_CT},
     "diseno": ${JSON_F_DIS}, "ux": ${JSON_F_UX}, "legal": ${JSON_F_LEGAL}
   },
@@ -2581,6 +2955,7 @@ generate_json() {
   "context": {
     "performance":     "$(_je "${CTX_PERFORMANCE:-}")",
     "seo":             "$(_je "${CTX_SEO:-}")",
+    "geo":             "$(_je "${CTX_GEO:-}")",
     "accesibilidad":   "$(_je "${CTX_ACCESIBILIDAD:-}")",
     "seguridad":       "$(_je "${CTX_SEGURIDAD:-}")",
     "ciberseguridad":  "$(_je "${CTX_CIBERSEGURIDAD:-}")",
@@ -2609,7 +2984,7 @@ JSONEOF
 main() {
   echo -e "\n${BOLD}${CYAN}╔══════════════════════════════════════════════╗${RESET}"
   echo -e "${BOLD}${CYAN}║        homium-audit v${SCRIPT_VERSION}                 ║${RESET}"
-  echo -e "${BOLD}${CYAN}║  Auditoría web profesional · 8 dimensiones   ║${RESET}"
+  echo -e "${BOLD}${CYAN}║  Auditoría web profesional · 9 dimensiones   ║${RESET}"
   echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════════╝${RESET}\n"
 
   info "URL: ${BOLD}${URL}${RESET}"
@@ -2633,6 +3008,7 @@ main() {
 
   should_run "performance"    && analyze_performance    || true
   should_run "seo"            && analyze_seo            || true
+  should_run "geo"            && analyze_geo            || true
   should_run "accesibilidad"  && analyze_accesibilidad  || true
   should_run "seguridad"      && analyze_seguridad      || true
   should_run "ciberseguridad" && analyze_ciberseguridad || true
@@ -2697,6 +3073,7 @@ main() {
   echo ""
   progress_bar "Performance    " "$SCORE_PERFORMANCE"
   progress_bar "SEO            " "$SCORE_SEO"
+  progress_bar "GEO            " "$SCORE_GEO"
   progress_bar "Accesibilidad  " "$SCORE_ACCESIBILIDAD"
   progress_bar "Seguridad      " "$SCORE_SEGURIDAD"
   progress_bar "Ciberseguridad " "$SCORE_CIBERSEGURIDAD"
