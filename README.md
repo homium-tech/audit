@@ -196,12 +196,13 @@ Este repo es el **motor de recolección de datos**. Para el dashboard, gestión 
 
 ## 📋 Changelog
 
-### v1.6.2 — Conclusión firmada por Homium · Sin tiempos · Sin tabla duplicada
+### v1.6.2 — Conclusión Homium · Sin tiempos · Sin tabla duplicada · Skill actualizado
 
-- **Conclusión firmada:** título cambiado a `## 💬 Conclusión — Homium` y apertura "De acuerdo al análisis realizado por **Homium**..." — coherente con la identidad de marca.
-- **Tabla "Diagnóstico general" eliminada** de la conclusión — repetía los scores que ya aparecen en la tabla de dimensiones al inicio del reporte.
-- **Sin tiempos de implementación:** eliminados de todos los ítems del plan GEO (`— ~2 horas`, `— 5 minutos`, `— 2-4 horas`, etc.) y de los headers de grupo (`menos de 1 día de trabajo`, `1-3 días de trabajo`).
-- **Columna "Esfuerzo est." eliminada** de la Hoja de Ruta global — la tabla queda más limpia y enfocada en impacto.
+- **Conclusión firmada:** título `## 💬 Conclusión — Homium` y apertura "De acuerdo al análisis realizado por **Homium**..." — coherente con identidad de marca.
+- **Tabla "Diagnóstico general" eliminada** de la conclusión — repetía los scores del inicio del reporte.
+- **Sin tiempos de implementación:** eliminados de todos los ítems del plan GEO y de los headers de grupo.
+- **Columna "Esfuerzo est." eliminada** de la Hoja de Ruta — tabla más limpia, enfocada en impacto.
+- **Skill `/homium-audit` actualizado:** reemplaza el volcado completo del MD por un resumen ejecutivo estructurado (score global, tabla 9 dimensiones, hallazgos críticos, paths de archivos). Elimina la sección de Claude Design. Próximos pasos: solo dashboard y re-auditar.
 
 ### v1.6.1 — GEO fixes + Hoja de Ruta + Conclusión Ejecutiva
 

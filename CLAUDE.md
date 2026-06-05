@@ -183,14 +183,15 @@ El MD muestra `✅ Página separada` / `⚠️ Solo sección in-page` / `❌ No 
 
 Las secciones al final del MD (generadas en `generate_report()`) son:
 
-1. **🗺️ Hoja de Ruta** — tabla numerada con hasta ~21 acciones de todas las dimensiones, ordenadas por impacto × esfuerzo. Columnas: acción, dimensión, severidad, esfuerzo estimado, impacto esperado. Reemplaza los sprints simples de versiones anteriores.
+1. **🗺️ Hoja de Ruta** — tabla numerada con hasta ~21 acciones de todas las dimensiones, ordenadas por impacto × esfuerzo. Columnas: acción, dimensión, severidad, impacto esperado (sin columna de esfuerzo/tiempos — eliminada en v1.6.2).
 
-2. **💬 Conclusión Ejecutiva** — 5 secciones dinámicas:
-   - Diagnóstico general con tabla de scores + semáforo
+2. **💬 Conclusión — Homium** — abre con "De acuerdo al análisis realizado por **Homium**..." y contiene 4 secciones dinámicas:
    - Fortalezas detectadas (dinámicas según scores reales — solo muestra las que superan umbral)
    - Brechas críticas en lenguaje de negocio (seguridad, GEO, email, legal)
    - Análisis profundo GEO — explica qué mide, por qué difiere del SEO, y cuál es el gap principal
    - Proyección de mejora con tabla antes/después + próximo paso recomendado
+
+   **Eliminado en v1.6.2:** tabla "Diagnóstico general" (duplicaba la tabla de scores del inicio) y todos los tiempos de implementación del plan GEO.
 
 ### Sprint plan en JSON — patrón _at1/_at2/_at3
 
