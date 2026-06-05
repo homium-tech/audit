@@ -4,7 +4,7 @@ Este archivo proporciona orientación a Claude Code (claude.ai/code) cuando trab
 
 ## Qué es este proyecto
 
-`homium-audit` es una herramienta CLI en bash puro que audita sitios web desde 8 dimensiones y genera reportes profesionales. Corre como skill `/homium-audit` dentro de Claude Code.
+`homium-audit` es una herramienta CLI en bash puro que audita sitios web desde 9 dimensiones y genera reportes profesionales. Corre como skill `/homium-audit` dentro de Claude Code.
 
 **Flujo de uso:** `/homium-audit <URL>` → ejecuta `homium-audit.sh` → guarda dos archivos en `~/audits/`:
 - `reporte-[slug]-[timestamp].md` — reporte visual para stakeholders
@@ -57,7 +57,7 @@ Este patrón es intencional por compatibilidad con bash 3. No refactorizar a `de
 
 El score global es un weighted average calculado en `compute_global_score()`:
 ```
-performance:20 seo:15 accesibilidad:15 seguridad:15 ciberseguridad:10 calidad_tecnica:10 diseno:8 ux:7
+performance:19 seo:14 geo:8 accesibilidad:14 seguridad:14 ciberseguridad:9 calidad_tecnica:9 diseno:7 ux:6
 ```
 
 ### Contextos por dimensión
@@ -67,6 +67,7 @@ performance:20 seo:15 accesibilidad:15 seguridad:15 ciberseguridad:10 calidad_te
 ```bash
 CTX_PERFORMANCE   # "Por encima del promedio del sector. Sin CDN. Sin imágenes WebP/AVIF."
 CTX_SEO           # "Fundamentos SEO sólidos. Todos los elementos críticos presentes."
+CTX_GEO           # "Visibilidad parcial en IA. Sin preguntas estructuradas para IA. Sin llms.txt."
 CTX_SEGURIDAD     # "Faltan 5 headers críticos: HSTS, CSP, ..."
 # ... una por cada dimensión
 ```
@@ -79,7 +80,7 @@ El HTML se descarga una sola vez al inicio de `main()`:
 ```bash
 HTML_CACHE=$(fetch_url "$URL")
 ```
-Todas las funciones `analyze_*` leen `$HTML_CACHE` con `grep` — sin requests adicionales. Los datos de performance, SEO, accesibilidad, calidad, diseño, UX, tecnología y legal se extraen todos de esta variable. No llamar `fetch_url` dentro de las funciones analyze salvo para URLs específicas (robots.txt, sitemap, rutas expuestas).
+Todas las funciones `analyze_*` leen `$HTML_CACHE` con `grep` — sin requests adicionales. Los datos de performance, SEO, accesibilidad, calidad, diseño, UX, GEO, tecnología y legal se extraen todos de esta variable. No llamar `fetch_url` dentro de las funciones analyze salvo para URLs específicas (robots.txt, sitemap, rutas expuestas, llms.txt).
 
 ### Lighthouse — una sola ejecución, cacheada
 
@@ -100,6 +101,74 @@ Ambas funciones leen las mismas variables de shell. Si se agrega un dato nuevo, 
 - `_jb "bool"` — convierte "true"/"false" a JSON boolean
 - `_jarr item1 item2` — construye array JSON de strings
 - `_lhnum "audit" "device"` — extrae métrica numérica de Lighthouse
+
+### Dimensión GEO — arquitectura
+
+`analyze_geo()` corre después de `analyze_seo()` en `main()` y es **autónoma**: no depende de `analyze_tecnologia()`. Usa greps directos en `HTML_CACHE` para todo lo que necesita.
+
+**Requests nuevos (máximo 4):**
+- `curl -s /robots.txt` — descarga el contenido completo para parsear bots AI (el status ya se tenía; ahora se guarda el body)
+- `HEAD /llms.txt` — verifica existencia del archivo de prioridades para IA
+- `HEAD /nosotros` o `/about` — verifica página "Quiénes somos" como URL separada
+- `HEAD /contacto` o `/contact` — verifica página de contacto como URL separada
+
+**Señales extraídas de variables ya en memoria (costo cero):**
+- `SEO_SCHEMA_TYPES` — contiene todos los tipos de schema; se hace `grep` para FAQPage, HowTo, Speakable, Article, Product, Review, Organization
+- `SEO_EXT_LINKS` — total de links externos (base para ratio autoritativo)
+- `SEO_WORD_COUNT` — palabras en página
+- `UX_SOCIAL` — links a redes sociales
+
+**Detección de tipo de sitio** (desde `HTML_CACHE`, sin depender de `TECH_CMS`):
+```
+ecommerce  → Shopify/WooCommerce/PrestaShop en HTML, /cart links
+blog       → Ghost, /blog /articulos /noticias en links internos
+saas       → Next.js/Nuxt sin blog
+onepager   → < 3 links internos a sub-páginas
+institucional → default
+```
+El flag `--sector` tiene prioridad sobre la auto-detección.
+
+**Variables de salida de `analyze_geo()`:**
+```bash
+GEO_SITE_TYPE          # ecommerce|blog|saas|onepager|institucional
+GEO_BOT_CHATGPT        # true|false — GPTBot permitido en robots.txt
+GEO_BOT_GEMINI         # true|false — Googlebot permitido
+GEO_BOT_CLAUDE         # true|false — ClaudeBot/anthropic-ai permitido
+GEO_BOT_PERPLEXITY     # true|false — PerplexityBot permitido
+GEO_LLMS_TXT           # true|false
+GEO_SCHEMA_FAQ         # true|false — FAQPage schema
+GEO_SCHEMA_HOWTO       # true|false — HowTo schema
+GEO_SCHEMA_SPEAKABLE   # true|false — Speakable schema
+GEO_SCHEMA_ARTICLE     # true|false — Article/BlogPosting schema
+GEO_SCHEMA_PRODUCT     # true|false — Product schema (ecommerce)
+GEO_SCHEMA_REVIEW      # true|false — Review/AggregateRating schema
+GEO_SCHEMA_ORG         # true|false — Organization schema presente
+GEO_SCHEMA_ORG_NAME_OK # true|false — nombre no es "Home" u otro genérico
+GEO_SCHEMA_SAMAS_EMPTY # true|false — sameAs está vacío
+GEO_PAGE_ABOUT         # true|false — /nosotros, /about o sección in-page
+GEO_PAGE_CONTACT       # true|false — /contacto, /contact o sección in-page
+GEO_AUTHOR_VISIBLE     # true|false — byline o itemprop="author" en HTML
+GEO_DATE_VISIBLE       # true|false — <time datetime=> o itemprop="datePublished"
+GEO_SOCIAL_LINKS       # true|false — redes sociales visibles en HTML
+GEO_STRUCTURED_PCT     # 0-100 — % contenido en listas/tablas vs palabras
+GEO_LI_COUNT           # int — cantidad de <li>
+GEO_TABLE_COUNT        # int — cantidad de <table>
+GEO_AUTH_LINKS         # int — links a .gov, .edu, Wikipedia, etc.
+GEO_AUTH_LINKS_PCT     # 0-100 — % del total de links externos
+GEO_ENGINE_CHATGPT     # 0-100 — score específico para ChatGPT
+GEO_ENGINE_GEMINI      # 0-100 — score específico para Gemini
+GEO_ENGINE_CLAUDE      # 0-100 — score específico para Claude
+GEO_ENGINE_PERPLEXITY  # 0-100 — score específico para Perplexity
+SCORE_GEO              # 0-100 — score global GEO
+```
+
+**Pesos del score por tipo de sitio:**
+- `ecommerce`: penaliza fuerte Product schema ausente (-15) y Review (-8)
+- `blog`: penaliza fuerte Article schema ausente (-15) y FAQ (-8)
+- `landing/onepager`: penaliza FAQPage (-12) y Organization (-8)
+- `institucional` (default): penaliza FAQPage (-12), Organization (-8), Article (-5), Speakable (-5)
+
+**Advertencia sobre `case` en heredoc:** usar `if/elif/fi` en lugar de `case/esac` dentro de `$()` en heredocs — bash 3.2 parsea mal los `)` de los patrones de `case` dentro de command substitutions.
 
 ### Sprint plan en JSON — patrón _at1/_at2/_at3
 
@@ -129,11 +198,12 @@ Cada herramienta opcional tiene un fallback:
 | Sección | Campos clave |
 |---------|-------------|
 | `meta` | version, url, domain, timestamp, sector, tools_available |
-| `scores` | global + 8 dimensiones + email_deliverability |
+| `scores` | global + 9 dimensiones + email_deliverability |
 | `context` | frase explicativa por dimensión (generada dinámicamente) |
-| `benchmarks` | average y top-10% por sector |
+| `benchmarks` | average y top-10% por sector (incluye geo) |
 | `performance` | response_ms, ttfb, size_kb, protocol, compression, cdn, resources (js/css/images/fonts/webp/lazy/srcset/third_party), lighthouse mobile+desktop con CWV |
 | `seo` | title, meta_desc, h1-h3, og, schema, hreflang, robots, sitemap, word_count, last_modified, links |
+| `geo` | score, site_type, context, engines (chatgpt/gemini/claude/perplexity con score+estado), acceso (bots + llms_txt), confianza (pagina_empresa, pagina_contacto, autor_visible, fecha_visible, nombre_empresa_correcto, perfiles_sociales, redes_en_sitio), contenido (preguntas_estructuradas, guias_estructuradas, fragmentos_voz, articulos_con_autor, productos_marcados, resenas_estructuradas, contenido_estructurado_pct, listas_detectadas, tablas_detectadas, palabras, links_externos, links_autoritativos, links_autoritativos_pct) |
 | `accesibilidad` | images_alt, aria, skip_nav, forms, axe, pa11y, lighthouse |
 | `seguridad` | headers (hsts/csp/xcto/xfo/rp/per/sri), https_redirect, ssl, cookies, caa, mx |
 | `ciberseguridad` | server, powered_by, exposed_paths, security_txt, spf, dmarc, dkim, bimi, source_maps_exposed |
@@ -169,6 +239,7 @@ CLAUDE.md                # Este archivo
 ## Problemas conocidos / limitaciones intencionales
 
 - El flag `--dimensions` está documentado en el README y los docs del skill pero no está implementado en el parser de argumentos. Usarlo causa exit 1.
+- `analyze_geo()` corre antes de `analyze_tecnologia()` por diseño — no puede usar `TECH_CMS` ni `TECH_WEBANALYZE`. Usa greps directos en `HTML_CACHE` para la detección de CMS/plataforma.
 - La columna Δ en la tabla de evolución del MD siempre muestra `—` — el cálculo del delta real está implementado en el JSON (`evolution.deltas`) pero no en la tabla MD.
 - `ipinfo.io` (usado para geolocalización de hosting/IP) tiene un límite gratuito de 50k req/mes. En macOS, `whois` no está instalado por defecto; el fallback RDAP (`rdap.org`) puede retornar datos incompletos para algunos TLDs.
 - El score de Performance puede variar ±5 pts entre ejecuciones consecutivas por variación natural de Lighthouse (especialmente Mobile).
