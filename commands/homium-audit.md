@@ -27,29 +27,38 @@ fi
 bash "$SCRIPT_PATH" "$ARGUMENTS" 2>&1
 ```
 
-Una vez ejecutado, lee el reporte `.md` más reciente en `~/audits/` y preséntalo completo en Markdown.
+Una vez ejecutado, encuentra el reporte JSON más reciente en `~/audits/` y presenta el siguiente resumen estructurado en Markdown (NO muestres el reporte completo):
 
-Al finalizar, muestra este mensaje exacto:
+1. Extrae del JSON: score global, scores por dimensión, hallazgos críticos y paths de archivos.
+2. Muestra el resumen en este formato:
 
 ---
 
-## 🎨 ¿Quieres visualizar este reporte para tu cliente?
+✅ **Auditoría completada — [dominio]**
 
-1. Crea un nuevo proyecto en [Claude Design](https://claude.ai/design)
-2. Carga el archivo `~/audits/reporte-[dominio]-[fecha].md` generado
-3. Agrega tu design system como contexto del proyecto
-4. Luego pide a Claude:
+**Score Global: [score]/100 [badge]**
 
-> **"Con base en el reporte cargado y el design system de Homium, pregunta que estilo de diseño quiero, por ejemplo: "claro o oscuro", Haz las preguntas necesarias para entender el contexto del cliente y sus necesidades de presentación. Finalmente genera un reporte HTML interactivo responsive para presentar al cliente que incluya:**
-> - **Gráfica radar con los 8 scores**
-> - **Barras de progreso animadas por dimensión**
-> - **Menú de navegación lateral por sección**
-> - **Cards por hallazgo con badge de severidad (crítico/alto/medio/bajo)**
-> - **Matriz de priorización impacto × esfuerzo como cuadrante visual**
-> - **Sección de evolución con comparativa si existe reporte anterior**
-> - **Responsive mobile y desktop**
-> - **Destaca en una tabla información de servidor, ssl, fechas de adquisición, fechas de expiración, etc.**
-> - **Crea un botón para descargar una versión descargable en Pdf del informe.**
-> - **Aplica los colores, tipografía y componentes del design system de Homium."**
+| Dimensión | Score | Estado |
+|-----------|:-----:|--------|
+| ⚡ Performance | X | 🟢/🟡/🟠/🔴 |
+| 🔍 SEO | X | … |
+| 🤖 GEO | X | … |
+| ♿ Accesibilidad | X | … |
+| 🔒 Seguridad | X | … |
+| 🛡️ Ciberseguridad | X | … |
+| ⚙️ Calidad Técnica | X | … |
+| 🎨 Diseño | X | … |
+| 👤 UX | X | … |
 
+**🔴 Hallazgos críticos** *(si los hay)*
 
+**📁 Archivos generados:**
+- `~/audits/reporte-[dominio]-[timestamp].md`
+- `~/audits/reporte-[dominio]-[timestamp].json`
+
+---
+
+## ¿Qué hacer ahora?
+
+- 📊 **Subir al dashboard** — carga el archivo `.json` en [homium-audit-platform](https://github.com/homium-tech/audit-platform) para visualizar el reporte completo.
+- 🔄 **Re-auditar** — ejecuta `/homium-audit [URL]` después de implementar las mejoras para medir el avance.
