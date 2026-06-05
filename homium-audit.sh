@@ -1808,10 +1808,10 @@ $(
     [ $GEO_STRUCTURED_PCT -lt 40 ]; then _has_medium=true; fi
 
   if [[ "$_has_urgent" == true ]]; then
-    echo "##### 🔴 Urgente — alto impacto, menos de 1 día de trabajo"
+    echo "##### 🔴 Urgente — alto impacto"
     echo ""
     if [ "$GEO_PAGE_ABOUT_TYPE" != "pagina" ]; then
-      echo "**Crear página dedicada «Quiénes somos»** — *Gemini, Claude* — ~2 horas"
+      echo "**Crear página dedicada «Quiénes somos»** — *Gemini, Claude*"
       if [ "$GEO_PAGE_ABOUT_TYPE" == "seccion" ]; then
         echo "> El sitio tiene una sección in-page pero no una URL dedicada. Gemini y Claude priorizan páginas separables con URL propia (/nosotros o /about). Una página dedicada transmite más autoridad que una sección anclada."
       else
@@ -1821,7 +1821,7 @@ $(
       echo ""
     fi
     if [ "$GEO_PAGE_CONTACT_TYPE" != "pagina" ]; then
-      echo "**Crear página dedicada de contacto** — *Todos los motores* — ~1 hora"
+      echo "**Crear página dedicada de contacto** — *Todos los motores*"
       if [ "$GEO_PAGE_CONTACT_TYPE" == "seccion" ]; then
         echo "> Sección in-page detectada, pero no es suficiente. Una URL /contacto con email, teléfono y formulario es la señal que validan los crawlers de IA para confirmar que la empresa es real y localizable."
       else
@@ -1831,7 +1831,7 @@ $(
       echo ""
     fi
     if [ "$GEO_BOT_CHATGPT" == "false" ]; then
-      echo "**Desbloquear GPTBot en robots.txt** — *ChatGPT* — 5 minutos"
+      echo "**Desbloquear GPTBot en robots.txt** — *ChatGPT*"
       echo "> Sin este cambio el sitio es invisible para ChatGPT Browse y SearchGPT. Es el cambio de mayor impacto con menor esfuerzo posible."
       echo '> ```'
       echo '> # robots.txt — eliminar o cambiar:'
@@ -1841,7 +1841,7 @@ $(
       echo ""
     fi
     if [ "$GEO_SCHEMA_ORG" == "true" ] && [ "$GEO_SCHEMA_ORG_NAME_OK" == "false" ]; then
-      echo "**Corregir nombre de empresa en el código** — *Todos los motores* — 5 minutos"
+      echo "**Corregir nombre de empresa en el código** — *Todos los motores*"
       echo "> El schema dice \`\"name\": \"Home\"\`. Las IA usan este campo para identificar y citar la empresa. Cambiarlo al nombre real es un fix de 5 minutos con impacto inmediato."
       echo '> ```json'
       echo '> { "@type": "Organization", "name": "Nombre Real de la Empresa", ... }'
@@ -1849,7 +1849,7 @@ $(
       echo ""
     fi
     if [ "$GEO_SCHEMA_ORG" == "true" ] && [ "$GEO_SCHEMA_SAMAS_EMPTY" == "true" ]; then
-      echo "**Enlazar perfiles sociales en el código** — *Todos los motores* — 15 minutos"
+      echo "**Enlazar perfiles sociales en el código** — *Todos los motores*"
       echo "> El campo \`sameAs\` está vacío. Agregar los links de LinkedIn, Instagram y otras redes permite que la IA verifique la presencia oficial de la empresa."
       echo '> ```json'
       echo '> "sameAs": ["https://linkedin.com/company/nombre", "https://instagram.com/nombre"]'
@@ -1859,10 +1859,10 @@ $(
   fi
 
   if [[ "$_has_important" == true ]]; then
-    echo "##### 🟠 Importante — muy alto retorno, 1-3 días de trabajo"
+    echo "##### 🟠 Importante — muy alto retorno"
     echo ""
     if [ "$GEO_SCHEMA_FAQ" == "false" ]; then
-      echo "**Implementar sección de preguntas frecuentes estructurada** — *ChatGPT, Gemini* — 2-4 horas"
+      echo "**Implementar sección de preguntas frecuentes estructurada** — *ChatGPT, Gemini*"
       echo "> Es el factor individual más importante para aparecer citado en AI Overviews de Gemini y en respuestas de ChatGPT. Cada pregunta y respuesta debe estar codificada con FAQPage schema."
       echo '> ```json'
       echo '> {'
@@ -1881,7 +1881,7 @@ $(
       echo ""
     fi
     if [ "$GEO_LLMS_TXT" == "false" ]; then
-      echo "**Crear guía de contenido para IA (/llms.txt)** — *ChatGPT, Claude* — 30 minutos"
+      echo "**Crear guía de contenido para IA (/llms.txt)** — *ChatGPT, Claude*"
       echo "> Archivo emergente que indica a los modelos de IA qué páginas son prioritarias y cuál es el propósito del sitio. Equivalente moderno del sitemap para IA generativa. Ya lo adoptaron OpenAI, Anthropic y Perplexity como estándar de referencia."
       echo '> ```'
       echo "> # llms.txt"
@@ -1900,17 +1900,17 @@ $(
     echo "##### 🟡 Mediano plazo — impacto acumulativo sobre autoridad y frescura"
     echo ""
     [ "$GEO_AUTHOR_VISIBLE" == "false" ] && \
-      echo "**Mostrar autor visible en el contenido** — *Gemini, Claude* — ~2 horas" && \
+      echo "**Mostrar autor visible en el contenido** — *Gemini, Claude*" && \
       echo "> Las IA evalúan la credibilidad del contenido basándose en quién lo escribe. Agregar byline con nombre y cargo, más Article schema con autor, mejora la percepción de autoridad." && \
       echo "> *(Técnico: Article schema con \`author.name\` + \`<span itemprop=\"author\">\` visible)*" && echo ""
     [ "$GEO_DATE_VISIBLE" == "false" ] && \
-      echo "**Mostrar fecha de publicación visible en el HTML** — *Perplexity* — ~1 hora" && \
+      echo "**Mostrar fecha de publicación visible en el HTML** — *Perplexity*" && \
       echo "> Perplexity prioriza contenido con fecha clara y reciente. El header HTTP tiene last-modified pero no es suficiente — la fecha debe estar visible en el DOM." && \
       echo '> ```html' && \
       echo '> <time datetime="2026-05-26">Actualizado: 26 mayo 2026</time>' && \
       echo '> ```' && echo ""
     [ "$GEO_SCHEMA_SPEAKABLE" == "false" ] && \
-      echo "**Agregar fragmentos destacados para respuestas de voz** — *Gemini* — ~2 horas" && \
+      echo "**Agregar fragmentos destacados para respuestas de voz** — *Gemini*" && \
       echo "> Speakable schema indica a Google Asistente y Gemini qué secciones son aptas para respuestas de voz. Aumenta la probabilidad de aparecer en búsquedas conversacionales." && \
       echo "> *(Técnico: Speakable schema con cssSelector apuntando a los párrafos clave)*" && echo ""
     [ $GEO_STRUCTURED_PCT -lt 40 ] && \
@@ -2359,8 +2359,8 @@ fi)
 
 > Las acciones están ordenadas por el mayor retorno con el menor esfuerzo. Implementar en este orden maximiza el impacto en el menor tiempo posible.
 
-| # | Acción | Dimensión | Severidad | Esfuerzo est. | Impacto esperado |
-|:-:|--------|-----------|:---------:|:-------------:|-----------------|
+| # | Acción | Dimensión | Severidad | Impacto esperado |
+|:-:|--------|-----------|:---------:|-----------------|
 $(
   _r=0
   # CRÍTICOS — seguridad (<30 min cada uno)
@@ -2404,7 +2404,7 @@ $(
 
 ---
 
-## 💬 Conclusión Ejecutiva
+## 💬 Conclusión — Homium
 
 $(
 # Identificar dimensiones más fuertes y más débiles
@@ -2435,21 +2435,7 @@ elif (( SCORE_GLOBAL >= 55 )); then _estado="aceptable con brechas importantes"
 else                                 _estado="con brechas críticas que requieren atención inmediata"
 fi
 
-echo "### Diagnóstico general"
-echo ""
-echo "**${domain}** obtuvo un score global de **${SCORE_GLOBAL}/100** — sitio ${_estado}."
-echo ""
-echo "| Dimensión | Score | Estado |"
-echo "|-----------|:-----:|--------|"
-echo "| ⚡ Performance | ${SCORE_PERFORMANCE}/100 | $(score_badge $SCORE_PERFORMANCE) |"
-echo "| 🔍 SEO | ${SCORE_SEO}/100 | $(score_badge $SCORE_SEO) |"
-echo "| 🤖 GEO (IA Generativa) | ${SCORE_GEO}/100 | $(score_badge $SCORE_GEO) |"
-echo "| ♿ Accesibilidad | ${SCORE_ACCESIBILIDAD}/100 | $(score_badge $SCORE_ACCESIBILIDAD) |"
-echo "| 🔒 Seguridad | ${SCORE_SEGURIDAD}/100 | $(score_badge $SCORE_SEGURIDAD) |"
-echo "| 🛡️ Ciberseguridad | ${SCORE_CIBERSEGURIDAD}/100 | $(score_badge $SCORE_CIBERSEGURIDAD) |"
-echo "| ⚙️ Calidad Técnica | ${SCORE_CALIDAD_TECNICA}/100 | $(score_badge $SCORE_CALIDAD_TECNICA) |"
-echo "| 🎨 Diseño | ${SCORE_DISENO}/100 | $(score_badge $SCORE_DISENO) |"
-echo "| 👤 UX | ${SCORE_UX}/100 | $(score_badge $SCORE_UX) |"
+echo "De acuerdo al análisis realizado por **Homium**, el sitio **${domain}** obtuvo un score global de **${SCORE_GLOBAL}/100**, lo que refleja un sitio ${_estado}."
 echo ""
 
 # Fortalezas
@@ -2492,7 +2478,7 @@ echo ""
 # Proyección
 echo "### 📈 Proyección de mejora"
 echo ""
-echo "Con las acciones críticas y de alto impacto implementadas (estimado: 1-2 semanas de trabajo):"
+echo "Con las acciones críticas y de alto impacto implementadas:"
 echo ""
 echo "| Métrica | Actual | Proyectado |"
 echo "|---------|:------:|:----------:|"
