@@ -145,8 +145,10 @@ GEO_SCHEMA_REVIEW      # true|false — Review/AggregateRating schema
 GEO_SCHEMA_ORG         # true|false — Organization schema presente
 GEO_SCHEMA_ORG_NAME_OK # true|false — nombre no es "Home" u otro genérico
 GEO_SCHEMA_SAMAS_EMPTY # true|false — sameAs está vacío
-GEO_PAGE_ABOUT         # true|false — /nosotros, /about o sección in-page
-GEO_PAGE_CONTACT       # true|false — /contacto, /contact o sección in-page
+GEO_PAGE_ABOUT         # true|false — /nosotros, /about o sección in-page detectada
+GEO_PAGE_ABOUT_TYPE    # "pagina"|"seccion"|"ninguna" — URL separada vs anchor in-page vs ausente
+GEO_PAGE_CONTACT       # true|false — /contacto, /contact o sección in-page detectada
+GEO_PAGE_CONTACT_TYPE  # "pagina"|"seccion"|"ninguna" — URL separada vs anchor in-page vs ausente
 GEO_AUTHOR_VISIBLE     # true|false — byline o itemprop="author" en HTML
 GEO_DATE_VISIBLE       # true|false — <time datetime=> o itemprop="datePublished"
 GEO_SOCIAL_LINKS       # true|false — redes sociales visibles en HTML
@@ -170,9 +172,29 @@ SCORE_GEO              # 0-100 — score global GEO
 
 **Advertencia sobre `case` en heredoc:** usar `if/elif/fi` en lugar de `case/esac` dentro de `$()` en heredocs — bash 3.2 parsea mal los `)` de los patrones de `case` dentro de command substitutions.
 
+**Distinción página vs sección in-page:** `GEO_PAGE_ABOUT_TYPE` y `GEO_PAGE_CONTACT_TYPE` toman uno de tres valores:
+- `"pagina"` — URL separada que responde 200 (`/nosotros` o `/about`)
+- `"seccion"` — anchor in-page detectado (`id="nosotros"` o `href="#nosotros"`)
+- `"ninguna"` — no detectado de ninguna forma
+
+El MD muestra `✅ Página separada` / `⚠️ Solo sección in-page` / `❌ No existe` según el tipo. El JSON guarda el valor string del tipo para que la plataforma pueda diferenciar los tres estados.
+
+### Estructura del reporte MD — secciones finales
+
+Las secciones al final del MD (generadas en `generate_report()`) son:
+
+1. **🗺️ Hoja de Ruta** — tabla numerada con hasta ~21 acciones de todas las dimensiones, ordenadas por impacto × esfuerzo. Columnas: acción, dimensión, severidad, esfuerzo estimado, impacto esperado. Reemplaza los sprints simples de versiones anteriores.
+
+2. **💬 Conclusión Ejecutiva** — 5 secciones dinámicas:
+   - Diagnóstico general con tabla de scores + semáforo
+   - Fortalezas detectadas (dinámicas según scores reales — solo muestra las que superan umbral)
+   - Brechas críticas en lenguaje de negocio (seguridad, GEO, email, legal)
+   - Análisis profundo GEO — explica qué mide, por qué difiere del SEO, y cuál es el gap principal
+   - Proyección de mejora con tabla antes/después + próximo paso recomendado
+
 ### Sprint plan en JSON — patrón _at1/_at2/_at3
 
-El sprint plan usa tres funciones de append directo (sin `eval`) para acumular ítems:
+El sprint plan en el JSON usa tres funciones de append directo (sin `eval`) para acumular ítems:
 ```bash
 _at1() { [[ -n "$_s1" ]] && _s1="${_s1},\"..\"" || _s1="\"..\""; }
 _at2() { ... }

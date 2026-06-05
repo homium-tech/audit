@@ -3,7 +3,7 @@
 > Herramienta de auditoría web profesional para Claude Code.
 > Analiza sitios web desde **9 dimensiones**, genera reportes Markdown listos para stakeholders y detecta el stack tecnológico completo.
 
-[![Version](https://img.shields.io/badge/versión-1.6.0-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.6.0)
+[![Version](https://img.shields.io/badge/versión-1.6.1-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.6.1)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Compatible-blueviolet)](https://claude.ai)
 [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-green)](https://www.gnu.org/software/bash/)
@@ -176,7 +176,7 @@ El `.md` incluye:
 
 ```
 homium-audit/
-├── homium-audit.sh          # Script principal (v1.6.0)
+├── homium-audit.sh          # Script principal (v1.6.1)
 ├── install.sh               # Instalador one-liner
 ├── commands/
 │   └── homium-audit.md      # Skill /homium-audit para Claude Code
@@ -195,6 +195,30 @@ Este repo es el **motor de recolección de datos**. Para el dashboard, gestión 
 ---
 
 ## 📋 Changelog
+
+### v1.6.1 — GEO fixes + Hoja de Ruta + Conclusión Ejecutiva
+
+**Fixes de exactitud en GEO:**
+- La detección de páginas About y Contact ahora distingue tres estados: `✅ Página separada` (URL propia con 200), `⚠️ Solo sección in-page` (anchor `#nosotros` en la misma página) y `❌ No existe`. Antes ambos casos marcaban `✅ Existe`, lo que generaba falsos positivos en sitios tipo one-pager.
+- Tabla de Contenido GEO sin fila vacía para tipos de sitio que no son ecommerce ni blog.
+- Fila "Tipo de sitio" con descripción contextual (e-commerce/blog/institucional).
+
+**Plan de mejora GEO → Hoja de Ruta GEO en 3 niveles:**
+- 🔴 **Urgente** — páginas dedicadas, corrección de schema name/sameAs, bots bloqueados. Cada ítem incluye descripción contextual inteligente (detecta si hay sección in-page y explica por qué igual se necesita una URL separada).
+- 🟠 **Importante** — FAQPage schema con snippet JSON listo para copiar, llms.txt con plantilla completa.
+- 🟡 **Mediano plazo** — autor visible, fecha en DOM con `<time>`, Speakable schema, ratio de contenido estructurado, fuentes externas.
+
+**Sprints eliminados → 🗺️ Hoja de Ruta global:**
+- Tabla única numerada con hasta 21 acciones de todas las dimensiones.
+- Ordenada por impacto × esfuerzo real: primero headers de seguridad (15-30 min cada uno), luego GEO, legal, email, performance y calidad.
+- Columnas: dimensión, severidad, esfuerzo estimado y resultado esperado con números concretos.
+
+**💬 Conclusión Ejecutiva — 5 secciones:**
+1. **Diagnóstico general** — tabla de scores por dimensión con semáforo de color.
+2. **Fortalezas detectadas** — dinámicas, solo muestra las dimensiones que superan umbral real.
+3. **Brechas críticas** — en lenguaje de negocio: qué riesgo concreto representa cada brecha (seguridad, GEO, email, GDPR).
+4. **Análisis profundo GEO** — explica en qué difiere GEO del SEO tradicional y cuál es el gap de mayor impacto.
+5. **Proyección de mejora** — tabla antes/después con scores estimados post-implementación + próximo paso recomendado.
 
 ### v1.6.0 — Nueva dimensión GEO (Generative Engine Optimization)
 
