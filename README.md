@@ -3,7 +3,7 @@
 > Herramienta de auditoría web profesional para Claude Code.
 > Analiza sitios web desde **9 dimensiones**, genera reportes Markdown listos para stakeholders y detecta el stack tecnológico completo.
 
-[![Version](https://img.shields.io/badge/versión-1.6.1-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.6.1)
+[![Version](https://img.shields.io/badge/versión-1.6.2-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.6.2)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Compatible-blueviolet)](https://claude.ai)
 [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-green)](https://www.gnu.org/software/bash/)
@@ -176,7 +176,7 @@ El `.md` incluye:
 
 ```
 homium-audit/
-├── homium-audit.sh          # Script principal (v1.6.1)
+├── homium-audit.sh          # Script principal (v1.6.2)
 ├── install.sh               # Instalador one-liner
 ├── commands/
 │   └── homium-audit.md      # Skill /homium-audit para Claude Code
@@ -195,6 +195,13 @@ Este repo es el **motor de recolección de datos**. Para el dashboard, gestión 
 ---
 
 ## 📋 Changelog
+
+### v1.6.2 — Conclusión firmada por Homium · Sin tiempos · Sin tabla duplicada
+
+- **Conclusión firmada:** título cambiado a `## 💬 Conclusión — Homium` y apertura "De acuerdo al análisis realizado por **Homium**..." — coherente con la identidad de marca.
+- **Tabla "Diagnóstico general" eliminada** de la conclusión — repetía los scores que ya aparecen en la tabla de dimensiones al inicio del reporte.
+- **Sin tiempos de implementación:** eliminados de todos los ítems del plan GEO (`— ~2 horas`, `— 5 minutos`, `— 2-4 horas`, etc.) y de los headers de grupo (`menos de 1 día de trabajo`, `1-3 días de trabajo`).
+- **Columna "Esfuerzo est." eliminada** de la Hoja de Ruta global — la tabla queda más limpia y enfocada en impacto.
 
 ### v1.6.1 — GEO fixes + Hoja de Ruta + Conclusión Ejecutiva
 
