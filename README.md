@@ -1,9 +1,9 @@
 # 🔍 homium-audit
 
 > Herramienta de auditoría web profesional para Claude Code.
-> Analiza sitios web desde **8 dimensiones**, genera reportes Markdown listos para stakeholders y detecta el stack tecnológico completo.
+> Analiza sitios web desde **9 dimensiones**, genera reportes Markdown listos para stakeholders y detecta el stack tecnológico completo.
 
-[![Version](https://img.shields.io/badge/versión-1.5.0-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.5.0)
+[![Version](https://img.shields.io/badge/versión-1.6.0-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v1.6.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Compatible-blueviolet)](https://claude.ai)
 [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-green)](https://www.gnu.org/software/bash/)
@@ -12,18 +12,19 @@
 
 ## ✨ ¿Qué analiza?
 
-| Dimensión | Herramientas | Qué detecta en v1.2 |
-|-----------|-------------|---------------------|
+| Dimensión | Herramientas | Qué detecta |
+|-----------|-------------|-------------|
 | ⚡ Performance | curl · Lighthouse | TTFB, Core Web Vitals, CDN, redirect chain, recursos JS/CSS |
 | 🔍 SEO | curl · Lighthouse | Title, meta, H1-H3, OG, Twitter Cards, Schema.org, hreflang, links |
+| 🤖 **GEO** | curl | **Nuevo en v1.6** — Visibilidad en ChatGPT, Gemini, Claude y Perplexity. Acceso de AI crawlers, llms.txt, FAQPage/HowTo/Speakable schema, E-E-A-T, autor y fecha visibles, contenido estructurado |
 | ♿ Accesibilidad | curl · Lighthouse · axe · pa11y | Alt, ARIA, contraste, formularios, WCAG |
 | 🔒 Seguridad | curl · openssl | Headers, SSL completo (TLS/cipher/SAN), HSTS max-age, CSP quality, CAA, MX |
-| 🛡️ Ciberseguridad | curl · dig | SPF, DMARC, **DKIM**, **BIMI**, 10 rutas expuestas, security.txt |
-| ⚙️ Calidad Técnica | curl · htmlhint | Tags deprecados, mixed content, **PWA**, Service Worker |
+| 🛡️ Ciberseguridad | curl · dig | SPF, DMARC, DKIM, BIMI, 10 rutas expuestas, security.txt |
+| ⚙️ Calidad Técnica | curl · htmlhint | Tags deprecados, mixed content, PWA, Service Worker |
 | 🎨 Diseño | curl · Lighthouse | Frameworks, dark mode, favicon hi-res, print stylesheet, breakpoints |
 | 👤 UX | curl | Nav, CTAs, chat widget, redes sociales, breadcrumbs, validación formularios |
 
-**Nuevo en v1.4:** Genera un reporte **JSON estructurado** junto al `.md` en cada auditoría — base para integraciones y el dashboard de [homium-audit-platform](https://github.com/homium-tech/audit-platform).
+Genera un reporte **JSON estructurado** junto al `.md` en cada auditoría — base para integraciones y el dashboard de [homium-audit-platform](https://github.com/homium-tech/audit-platform).
 
 ---
 
@@ -124,7 +125,7 @@ homium-audit --update
 ### Dimensiones disponibles para `--dimensions`
 
 ```
-performance, seo, accesibilidad, seguridad, ciberseguridad, calidad, diseno, ux
+performance, seo, geo, accesibilidad, seguridad, ciberseguridad, calidad, diseno, ux
 ```
 
 ### Sectores disponibles para `--sector`
@@ -175,7 +176,7 @@ El `.md` incluye:
 
 ```
 homium-audit/
-├── homium-audit.sh          # Script principal (v1.5.0)
+├── homium-audit.sh          # Script principal (v1.6.0)
 ├── install.sh               # Instalador one-liner
 ├── commands/
 │   └── homium-audit.md      # Skill /homium-audit para Claude Code
@@ -194,6 +195,35 @@ Este repo es el **motor de recolección de datos**. Para el dashboard, gestión 
 ---
 
 ## 📋 Changelog
+
+### v1.6.0 — Nueva dimensión GEO (Generative Engine Optimization)
+
+**9ª dimensión: visibilidad en buscadores de IA generativa.**
+
+Evalúa qué tan bien posicionado está el sitio para ser citado por ChatGPT, Gemini, Claude y Perplexity — cada uno con su propio score y diagnóstico.
+
+**Señales analizadas:**
+
+- **Acceso de AI crawlers** — Verifica si GPTBot, ClaudeBot, PerplexityBot y Googlebot están permitidos en `robots.txt`. Un bot bloqueado = invisible para ese motor.
+- **llms.txt** — Archivo emergente que indica a los modelos de IA qué contenido priorizar (equivalente moderno del sitemap para IA).
+- **Schema para IA** — FAQPage, HowTo, Speakable, Article, Product, Review, Organization. Extraídos de los datos SEO ya cacheados (costo cero de red).
+- **E-E-A-T** — Páginas "Quiénes somos" y "Contacto" como URLs separadas o secciones in-page. Autor visible, fecha de publicación visible.
+- **Confianza del schema** — Detecta si el nombre de la empresa es genérico ("Home") o si `sameAs` está vacío.
+- **Contenido estructurado** — Ratio de listas y tablas vs. prosa. Las IA prefieren contenido > 40% estructurado.
+- **Referencias autoritativas** — Links a .gov, .edu, Wikipedia, PubMed y fuentes reconocidas.
+
+**Score por motor** (0-100 independiente por buscador):
+
+| Motor | Señales prioritarias |
+|-------|---------------------|
+| ChatGPT | GPTBot permitido · FAQPage schema · llms.txt |
+| Gemini | Googlebot permitido · FAQPage + Speakable · E-E-A-T completo |
+| Claude | ClaudeBot permitido · llms.txt · referencias autoritativas |
+| Perplexity | PerplexityBot permitido · fecha visible · contenido estructurado |
+
+**Tipo de sitio** — Auto-detectado desde el HTML (ecommerce / blog / saas / onepager / institucional). Los pesos del score varían según el tipo: e-commerce penaliza Product schema ausente, blogs penalizan Article sin autor, etc.
+
+**Impacto en score global:** GEO pesa 8% en el score global. Los demás pesos se redistribuyeron proporcionalmente (total = 100).
 
 ### v1.5.0 — Contextos por dimensión + datos enriquecidos
 
