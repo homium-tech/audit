@@ -268,6 +268,25 @@ CLAUDE.md                # Este archivo
 - El score de Performance puede variar ±5 pts entre ejecuciones consecutivas por variación natural de Lighthouse (especialmente Mobile).
 - `TECH_WEBANALYZE` solo se llena si `webanalyze` está instalado globalmente — no tiene fallback `npx`.
 
+## Trabajo pendiente — audit-platform (próxima sesión)
+
+El repo hermano **homium-audit-platform** necesita actualizarse para consumir el bloque `geo` introducido en v1.6.0:
+
+- **Local:** `/Users/gustavovera/Sites/localhost/git/tavo/claude/skills/audit-platform`
+- **Repo:** https://github.com/homium-tech/audit-platform
+- **Stack:** Node.js 20 + Hono + mysql2 + pnpm
+- **DB:** MySQL en MAMP (localhost:3306, user: root, DB: homium_audit)
+
+### Qué hay que hacer en audit-platform
+
+1. **Verificar primero** que MAMP esté corriendo y la conexión MySQL funcione (`pnpm dev`)
+2. **Leer el nuevo bloque `geo`** del JSON — campos: `scores.geo`, `context.geo`, `geo.engines` (ChatGPT/Gemini/Claude/Perplexity con score+estado), `geo.acceso`, `geo.confianza`, `geo.contenido`
+3. **Actualizar la UI** para mostrar:
+   - Scores por motor de IA (4 cards: ChatGPT/Gemini/Claude/Perplexity)
+   - Gráfica radar con 9 dimensiones (antes era 8 — agregar GEO)
+   - Señales de confianza y contenido GEO
+4. **Estado anterior:** Fase 1 implementada (endpoints POST/GET/DELETE de auditorías), pendiente prueba de conexión MySQL
+
 ## Reglas al agregar datos nuevos
 
 1. **Siempre en ambos archivos** — si un dato va al MD, va al JSON y viceversa.
