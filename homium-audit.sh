@@ -1031,7 +1031,14 @@ analyze_diseno() {
 
   DIS_PRINT_CSS=false;  grep -qi 'media="print"' <<< "$html"                     && DIS_PRINT_CSS=true  || true
   DIS_FAVICON_HI=false; grep -qi '192x192\|512x512\|apple-touch-icon' <<< "$html" && DIS_FAVICON_HI=true || true
-  DIS_BREAKPOINTS=$(echo "$html" | grep -oiE '@media[^{]+' | wc -l | tr -d '[:space:]') || DIS_BREAKPOINTS=0
+  local _dis_bp_src="$html"
+  local _dis_first_css; _dis_first_css=$(echo "$html" | grep -oiE 'href="[^"]*\.css[^"]*"' | head -1 | cut -d'"' -f2)
+  if [[ -n "$_dis_first_css" ]]; then
+    [[ "$_dis_first_css" != http* ]] && _dis_first_css="${URL%/}/${_dis_first_css#/}"
+    local _dis_css; _dis_css=$(curl -sSL --max-time 8 "$_dis_first_css" 2>/dev/null || echo "")
+    [[ -n "$_dis_css" ]] && _dis_bp_src="$html $_dis_css"
+  fi
+  DIS_BREAKPOINTS=$(echo "$_dis_bp_src" | grep -oiE '@media[^{]+' | wc -l | tr -d '[:space:]') || DIS_BREAKPOINTS=0
   DIS_BREAKPOINTS=${DIS_BREAKPOINTS:-0}
 
   run_lighthouse
@@ -1353,7 +1360,22 @@ analyze_ux() {
   UX_SEARCH=false;    grep -qi 'type="search"\|input.*search' <<< "$html"         && UX_SEARCH=true    || true
   UX_CONTACT=false;   grep -qi 'contact\|contacto\|mailto:\|tel:' <<< "$html"    && UX_CONTACT=true   || true
   UX_CTA=false;       grep -qi 'btn\|button\|comprar\|registr\|sign' <<< "$html" && UX_CTA=true       || true
-  UX_RESPONSIVE=false;grep -qi "@media\|max-width:\|min-width:" <<< "$html"      && UX_RESPONSIVE=true|| true
+  # Responsive: inline + viewport meta + primer CSS externo
+  UX_RESPONSIVE=false
+  grep -qi "@media\|max-width:\|min-width:" <<< "$html" && UX_RESPONSIVE=true || true
+  if [[ "$UX_RESPONSIVE" == false ]]; then
+    # viewport con width=device-width es señal definitiva de diseño responsive
+    grep -qi 'name="viewport"[^>]*width=device-width\|width=device-width[^>]*name="viewport"' <<< "$html" && UX_RESPONSIVE=true || true
+  fi
+  if [[ "$UX_RESPONSIVE" == false ]]; then
+    # escanear el primer CSS externo enlazado
+    local _first_css; _first_css=$(echo "$html" | grep -oiE 'href="[^"]*\.css[^"]*"' | head -1 | cut -d'"' -f2)
+    if [[ -n "$_first_css" ]]; then
+      [[ "$_first_css" != http* ]] && _first_css="${URL%/}/${_first_css#/}"
+      local _css_content; _css_content=$(curl -sSL --max-time 8 "$_first_css" 2>/dev/null || echo "")
+      grep -qi "@media\|max-width:\|min-width:" <<< "$_css_content" && UX_RESPONSIVE=true || true
+    fi
+  fi
   UX_LOADING=false;   grep -qi "loading\|spinner\|skeleton" <<< "$html"          && UX_LOADING=true   || true
 
   [[ "$UX_NAV"       == false ]] && score=$((score-15)) || true
