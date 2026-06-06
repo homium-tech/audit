@@ -2852,23 +2852,62 @@ generate_json() {
   persp_cro="$([ "${UX_CTA:-false}" == "true" ] && echo "CTAs presentes." || echo "Sin CTAs claros — pérdida de conversión directa.") Priorizar A/B testing en páginas de alto tráfico."
   persp_product="Score ${SCORE_GLOBAL:-0}/100 — $( (( ${SCORE_GLOBAL:-0} >= 80 )) && echo "producto en buen estado." || (( ${SCORE_GLOBAL:-0} >= 60 )) && echo "deuda técnica acumulada, requiere roadmap de mejora." || echo "deuda técnica crítica, sprint de emergencia recomendado.") OKRs sugeridos: performance, seguridad y UX."
 
-  # Narrative
-  local exec_summary conclusion
-  if   (( ${SCORE_GLOBAL:-0} >= 80 )); then exec_summary="El sitio ${domain} presenta un estado satisfactorio. Se recomienda priorizar las acciones de alto impacto antes del próximo ciclo de revisión."
-  elif (( ${SCORE_GLOBAL:-0} >= 60 )); then exec_summary="El sitio ${domain} presenta un estado aceptable con áreas de mejora importantes. Existen brechas que pueden impactar conversión, posicionamiento y seguridad."
-  else                                       exec_summary="El sitio ${domain} presenta deficiencias significativas que requieren atención inmediata con impacto directo en negocio, reputación y cumplimiento legal."
-  fi
+  # Narrative — best/worst dim primero para usarlos en exec_summary
   local _bd="" _bs=0 _wd="" _ws=101
-  for _pair in performance:${SCORE_PERFORMANCE:-0} seo:${SCORE_SEO:-0} accesibilidad:${SCORE_ACCESIBILIDAD:-0} seguridad:${SCORE_SEGURIDAD:-0} ciberseguridad:${SCORE_CIBERSEGURIDAD:-0} calidad_tecnica:${SCORE_CALIDAD_TECNICA:-0} diseno:${SCORE_DISENO:-0} ux:${SCORE_UX:-0}; do
+  for _pair in performance:${SCORE_PERFORMANCE:-0} seo:${SCORE_SEO:-0} geo:${SCORE_GEO:-0} accesibilidad:${SCORE_ACCESIBILIDAD:-0} seguridad:${SCORE_SEGURIDAD:-0} ciberseguridad:${SCORE_CIBERSEGURIDAD:-0} calidad_tecnica:${SCORE_CALIDAD_TECNICA:-0} diseno:${SCORE_DISENO:-0} ux:${SCORE_UX:-0}; do
     local _pd="${_pair%%:*}" _pv="${_pair##*:}"
     (( _pv > _bs )) && _bs=$_pv && _bd=$_pd
     (( _pv < _ws )) && _ws=$_pv && _wd=$_pd
   done
+
+  # Labels de negocio para dimensiones
+  _dim_label() {
+    case "$1" in
+      performance)    echo "velocidad de carga"      ;;
+      seo)            echo "posicionamiento orgánico" ;;
+      geo)            echo "visibilidad en IA"        ;;
+      accesibilidad)  echo "accesibilidad"            ;;
+      seguridad)      echo "seguridad"                ;;
+      ciberseguridad) echo "ciberseguridad"           ;;
+      calidad_tecnica)echo "calidad técnica"          ;;
+      diseno)         echo "diseño"                   ;;
+      ux)             echo "experiencia de usuario"   ;;
+      *)              echo "$1"                       ;;
+    esac
+  }
+  local _bd_label; _bd_label=$(_dim_label "$_bd")
+  local _wd_label; _wd_label=$(_dim_label "$_wd")
+
+  # Contexto específico del problema principal
+  local _wd_context=""
+  case "$_wd" in
+    seguridad)     _wd_context=" Los visitantes están expuestos a riesgos evitables." ;;
+    geo)           _wd_context=" Los clientes que buscan via IA no están encontrando el negocio." ;;
+    ux)            _wd_context=" La experiencia actual está limitando la conversión." ;;
+    accesibilidad) _wd_context=" Usuarios con discapacidad no pueden acceder al sitio correctamente." ;;
+    seo)           _wd_context=" El sitio tiene baja visibilidad en búsquedas orgánicas." ;;
+  esac
+
+  # GEO mention si es relevante y no es ya la peor dimensión
+  local _geo_mention=""
+  if [[ "$_wd" != "geo" ]] && (( ${SCORE_GEO:-0} < 60 )); then
+    _geo_mention=" La visibilidad en IA generativa (${SCORE_GEO}/100) también es una oportunidad sin aprovechar."
+  fi
+
+  local exec_summary conclusion
+  if   (( ${SCORE_GLOBAL:-0} >= 80 )); then
+    exec_summary="${domain} está en buen estado (${SCORE_GLOBAL}/100). Su fortaleza en ${_bd_label} (${_bs}/100) es la base para escalar. Cerrar la brecha en ${_wd_label} (${_ws}/100) es el paso natural siguiente.${_geo_mention}"
+  elif (( ${SCORE_GLOBAL:-0} >= 60 )); then
+    exec_summary="${domain} tiene base sólida en ${_bd_label} (${_bs}/100), pero ${_wd_label} en ${_ws}/100 está limitando el potencial del sitio.${_wd_context}${_geo_mention}"
+  else
+    exec_summary="${domain} tiene deuda técnica crítica (${SCORE_GLOBAL}/100). El punto más urgente es ${_wd_label} en ${_ws}/100.${_wd_context}${_geo_mention} Requiere atención inmediata para no seguir perdiendo oportunidades de negocio."
+  fi
+
   if   (( ${SCORE_GLOBAL:-0} >= 80 )); then local _estado="sólido"
   elif (( ${SCORE_GLOBAL:-0} >= 60 )); then local _estado="aceptable con oportunidades claras de mejora"
   else                                       local _estado="con brechas importantes que requieren atención prioritaria"
   fi
-  conclusion="De acuerdo al análisis de Homium, ${domain} obtuvo ${SCORE_GLOBAL:-0}/100 — sitio ${_estado}. Dimensión más fuerte: ${_bd//_/ } (${_bs}/100). Mayor oportunidad: ${_wd//_/ } (${_ws}/100)."
+  conclusion="De acuerdo al análisis de Homium, ${domain} obtuvo ${SCORE_GLOBAL:-0}/100 — sitio ${_estado}. Dimensión más fuerte: ${_bd_label} (${_bs}/100). Mayor oportunidad: ${_wd_label} (${_ws}/100)."
 
   # Narrative blocks — fortalezas
   local _narr_forte=""
