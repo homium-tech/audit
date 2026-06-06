@@ -2927,24 +2927,39 @@ generate_json() {
     [[ -n "$_narr_brechas" ]] && _narr_brechas="${_narr_brechas},${_obj}" || _narr_brechas="${_obj}"
   }
   if [[ "${SEC_HSTS:-false}" != "true" ]] || [[ "${SEC_HTTPS_REDIRECT:-false}" != "true" ]]; then
-    _narr_bra "seguridad" "Seguridad (${SCORE_SEGURIDAD}/100) — nivel crítico. Faltan headers fundamentales: HSTS, X-Content-Type-Options, X-Frame-Options. Sin redirección HTTP→HTTPS."
+    local _sec_missing=""
+    [[ "${SEC_HSTS:-false}"           != "true" ]] && _sec_missing="${_sec_missing}HSTS, "
+    [[ "${SEC_HTTPS_REDIRECT:-false}" != "true" ]] && _sec_missing="${_sec_missing}redirección HTTP→HTTPS, "
+    [[ "${SEC_XCTO:-false}"           != "true" ]] && _sec_missing="${_sec_missing}X-Content-Type-Options, "
+    [[ "${SEC_XFO:-false}"            != "true" ]] && _sec_missing="${_sec_missing}X-Frame-Options, "
+    _sec_missing="${_sec_missing%, }"
+    _narr_bra "seguridad" "Seguridad (${SCORE_SEGURIDAD}/100) — headers críticos ausentes: ${_sec_missing}. Cada visitante es vulnerable a ataques de intermediario y clickjacking hasta que esto se corrija."
   fi
   if [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]] || [[ "${GEO_LLMS_TXT:-false}" != "true" ]]; then
-    _narr_bra "geo" "Visibilidad en IA generativa (GEO ${SCORE_GEO}/100) — oportunidad sin aprovechar. ChatGPT (${GEO_ENGINE_CHATGPT}/100), Gemini (${GEO_ENGINE_GEMINI}/100), Claude (${GEO_ENGINE_CLAUDE}/100) y Perplexity (${GEO_ENGINE_PERPLEXITY}/100) pueden acceder al sitio pero raramente lo citarán. Sin FAQPage schema ni /llms.txt."
+    local _geo_gap=""
+    [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]] && _geo_gap="${_geo_gap}FAQPage schema ausente — ChatGPT y Gemini no pueden citar respuestas del contenido. "
+    [[ "${GEO_LLMS_TXT:-false}"   != "true" ]] && _geo_gap="${_geo_gap}/llms.txt ausente — la IA no sabe qué páginas priorizar. "
+    _narr_bra "geo" "GEO ${SCORE_GEO}/100 — ChatGPT (${GEO_ENGINE_CHATGPT}/100), Gemini (${GEO_ENGINE_GEMINI}/100), Claude (${GEO_ENGINE_CLAUDE}/100), Perplexity (${GEO_ENGINE_PERPLEXITY}/100). Los motores acceden pero raramente citan. ${_geo_gap}Implementar FAQPage schema y /llms.txt puede mover el score GEO a 75+."
   fi
   if [[ "${CYBER_DMARC:-AUSENTE}" == "AUSENTE" ]] || [[ "${CYBER_DKIM:-AUSENTE}" == "AUSENTE" ]]; then
-    _narr_bra "email" "Email deliverability comprometida. Sin DMARC y DKIM cualquier persona puede suplantar el dominio."
+    local _email_missing=""
+    [[ "${CYBER_DMARC:-AUSENTE}" == "AUSENTE" ]] && _email_missing="${_email_missing}DMARC, "
+    [[ "${CYBER_DKIM:-AUSENTE}"  == "AUSENTE" ]] && _email_missing="${_email_missing}DKIM, "
+    [[ "${CYBER_SPF:-AUSENTE}"   == "AUSENTE" ]] && _email_missing="${_email_missing}SPF, "
+    _email_missing="${_email_missing%, }"
+    _narr_bra "email" "Email deliverability en ${email_score:-0}/100 — sin ${_email_missing}, cualquier persona puede enviar correos haciéndose pasar por ${domain}. El dominio es vulnerable a phishing y daño reputacional."
   fi
   if [[ "${LEGAL_COOKIES:-false}" != "true" ]]; then
-    _narr_bra "legal" "Riesgo legal GDPR activo. Sin banner de consentimiento de cookies. Infracción del Reglamento ePrivacy — multas de hasta 20M€ o 4% de facturación anual."
+    local _trackers="${LEGAL_TRACKERS[*]:-trackers detectados}"
+    _narr_bra "legal" "Riesgo GDPR activo — sin banner de consentimiento mientras ${_trackers} está funcionando. Infracción del Reglamento ePrivacy: multas de hasta 20M€ o 4% de facturación anual."
   fi
   [[ -z "$_narr_brechas" ]] && _narr_brechas="{\"tipo\":\"ninguna\",\"texto\":\"Sin brechas críticas detectadas.\"}"
   local json_narr_brechas="[${_narr_brechas}]"
 
   # Narrative blocks — GEO insight
-  local _narr_geo_txt="Esta dimensión mide si ChatGPT, Gemini, Claude o Perplexity citan el sitio cuando un usuario hace una pregunta relacionada con el negocio. Score actual: ${SCORE_GEO}/100."
-  [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]] && _narr_geo_txt="${_narr_geo_txt} Gap crítico: sin FAQPage schema las IA no pueden extraer respuestas directas del contenido."
-  [[ "${GEO_LLMS_TXT:-false}" != "true" ]]   && _narr_geo_txt="${_narr_geo_txt} Sin /llms.txt el sitio no indica a las IA qué páginas priorizar."
+  local _narr_geo_txt="Mientras el SEO mide si Google te indexa, GEO mide si ChatGPT, Gemini, Claude o Perplexity te citan cuando alguien pregunta sobre tu sector. Score actual: ${SCORE_GEO}/100."
+  [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]] && _narr_geo_txt="${_narr_geo_txt} FAQPage schema ausente — las IA no pueden extraer respuestas del contenido para citarlo."
+  [[ "${GEO_LLMS_TXT:-false}" != "true" ]]   && _narr_geo_txt="${_narr_geo_txt} /llms.txt ausente — el sitio no le indica a la IA qué páginas son prioritarias."
   local json_narr_geo="$(_je "$_narr_geo_txt")"
 
   # Narrative blocks — proyección de mejora
@@ -2955,7 +2970,7 @@ generate_json() {
   local json_narr_proy="[{\"metrica\":\"Score Global\",\"actual\":${SCORE_GLOBAL:-0},\"proyectado\":${_narr_pg}},{\"metrica\":\"Seguridad\",\"actual\":${SCORE_SEGURIDAD:-0},\"proyectado\":${_narr_psec}},{\"metrica\":\"GEO\",\"actual\":${SCORE_GEO:-0},\"proyectado\":${_narr_pgeo}},{\"metrica\":\"Email Deliverability\",\"actual\":${email_score:-0},\"proyectado\":${_narr_pemail}}]"
 
   # Narrative blocks — próximo paso
-  local _narr_proximo="Comenzar por la Hoja de Ruta — las primeras 4-5 acciones eliminan los riesgos activos (seguridad + legal). A partir de ahí, las mejoras GEO son la inversión con mayor proyección de retorno a 6-12 meses, dado el crecimiento exponencial del uso de IA como canal de descubrimiento de servicios."
+  local _narr_proximo="Comenzar por la Hoja de Ruta — las primeras acciones eliminan los riesgos activos (seguridad + legal). A partir de ahí, las mejoras GEO son la inversión con mayor proyección de retorno, dado el crecimiento del uso de IA como canal de descubrimiento de servicios."
 
   # Evolution deltas
   local ev_prev="null" ev_g="null" ev_p="null" ev_s="null" ev_a="null"
