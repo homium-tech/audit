@@ -897,8 +897,11 @@ analyze_seguridad() {
   [[ "$SEC_PER"  == false ]] && score=$((score-10)) || true
   [[ "$SEC_CSP_UNSAFE" == true ]] && score=$((score-10)) || true
 
+  # HTTP→HTTPS redirect: NO seguir redirects (-no-L) para capturar el 301/302 real
   local http_code
-  http_code=$(http_status "http://${domain}")
+  http_code=$(curl -sso /dev/null --max-time "${TIMEOUT:-10}" \
+    --user-agent "Mozilla/5.0 (compatible; homium-audit/1.1)" \
+    -w "%{http_code}" "http://${domain}" 2>/dev/null || echo "000")
   [[ "$http_code" == "301" || "$http_code" == "302" ]] && SEC_HTTPS_REDIRECT=true || SEC_HTTPS_REDIRECT=false
   [[ "$SEC_HTTPS_REDIRECT" == false ]] && score=$((score-15)) || true
 
