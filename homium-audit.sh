@@ -1535,16 +1535,16 @@ compute_dimension_contexts() {
   else                                   CTX_UX="UX deficiente — impacto directo en conversión. ${u_issues}"
   fi
 
-  # GEO
+  # GEO — formato: [nombre técnico] — [consecuencia de negocio]
   local g_issues=""
-  [[ "$GEO_PAGE_ABOUT" == false ]]     && g_issues="${g_issues}Sin página Quiénes somos. "
-  [[ "$GEO_PAGE_CONTACT" == false ]]   && g_issues="${g_issues}Sin página de contacto. "
-  [[ "$GEO_SCHEMA_FAQ" == false ]]     && g_issues="${g_issues}Sin preguntas estructuradas para IA. "
-  [[ "$GEO_LLMS_TXT" == false ]]       && g_issues="${g_issues}Sin guía de contenido para IA. "
-  [[ "$GEO_BOT_CHATGPT" == false ]]    && g_issues="${g_issues}ChatGPT bloqueado. "
-  if   (( ${SCORE_GEO:-0} >= 75 )); then CTX_GEO="Buena visibilidad en buscadores de IA. ${g_issues:-Señales clave presentes.}"
-  elif (( ${SCORE_GEO:-0} >= 50 )); then CTX_GEO="Visibilidad parcial en IA. ${g_issues}"
-  else                                   CTX_GEO="Visibilidad crítica en IA generativa. ${g_issues}"
+  [[ "$GEO_BOT_CHATGPT" == false ]]  && g_issues="${g_issues}GPTBot bloqueado — el sitio es invisible para ChatGPT. "
+  [[ "$GEO_SCHEMA_FAQ" == false ]]   && g_issues="${g_issues}FAQPage schema ausente — ChatGPT y Gemini no pueden citar el contenido en sus respuestas. "
+  [[ "$GEO_LLMS_TXT" == false ]]     && g_issues="${g_issues}/llms.txt ausente — la IA no sabe qué páginas del sitio priorizar. "
+  [[ "$GEO_PAGE_ABOUT" == false ]]   && g_issues="${g_issues}Página de empresa ausente — señal de confianza E-E-A-T débil para la IA. "
+  [[ "$GEO_PAGE_CONTACT" == false ]] && g_issues="${g_issues}Página de contacto ausente — reduce la credibilidad del sitio ante los motores de IA. "
+  if   (( ${SCORE_GEO:-0} >= 75 )); then CTX_GEO="El sitio aparece cuando ChatGPT, Gemini y Claude responden preguntas del sector. ${g_issues:-Señales de confianza y contenido correctamente configuradas.}"
+  elif (( ${SCORE_GEO:-0} >= 50 )); then CTX_GEO="Los motores de IA tienen acceso pero raramente citan el sitio — cada búsqueda de IA es una oportunidad perdida. ${g_issues}"
+  else                                   CTX_GEO="Sitio prácticamente invisible para ChatGPT, Gemini y Claude. Potenciales clientes que buscan via IA no están encontrando el negocio. ${g_issues}"
   fi
 }
 
