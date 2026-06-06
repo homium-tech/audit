@@ -2920,13 +2920,14 @@ generate_json() {
 
   # Evolution deltas
   local ev_prev="null" ev_g="null" ev_p="null" ev_s="null" ev_a="null"
-  local ev_sec="null" ev_cy="null" ev_ct="null" ev_d="null" ev_u="null"
+  local ev_sec="null" ev_cy="null" ev_ct="null" ev_d="null" ev_u="null" ev_geo="null"
   if [[ -n "${PREV_REPORT:-}" && -f "$PREV_REPORT" ]]; then
     ev_prev="\"$(_je "$(basename "$PREV_REPORT")")\""
     local _pg; _pg=$(grep "Score Global" "$PREV_REPORT" 2>/dev/null | perl -nle 'print $1 if /([0-9]+) \/ 100/' | head -1 || echo "")
     [[ -n "$_pg" ]] && ev_g=$(( ${SCORE_GLOBAL:-0} - _pg )) || true
     local _pp; _pp=$(extract_prev_score "$PREV_REPORT" "Performance"); [[ "$_pp" != "N/A" && -n "$_pp" ]] && ev_p=$(( ${SCORE_PERFORMANCE:-0} - _pp )) || true
     local _ps; _ps=$(extract_prev_score "$PREV_REPORT" "SEO"); [[ "$_ps" != "N/A" && -n "$_ps" ]] && ev_s=$(( ${SCORE_SEO:-0} - _ps )) || true
+    local _pgeo; _pgeo=$(extract_prev_score "$PREV_REPORT" "GEO"); [[ "$_pgeo" != "N/A" && -n "$_pgeo" ]] && ev_geo=$(( ${SCORE_GEO:-0} - _pgeo )) || true
     local _pa; _pa=$(extract_prev_score "$PREV_REPORT" "Accesibilidad"); [[ "$_pa" != "N/A" && -n "$_pa" ]] && ev_a=$(( ${SCORE_ACCESIBILIDAD:-0} - _pa )) || true
     local _psec; _psec=$(extract_prev_score "$PREV_REPORT" "Seguridad"); [[ "$_psec" != "N/A" && -n "$_psec" ]] && ev_sec=$(( ${SCORE_SEGURIDAD:-0} - _psec )) || true
     local _pcy; _pcy=$(extract_prev_score "$PREV_REPORT" "Ciberseguridad"); [[ "$_pcy" != "N/A" && -n "$_pcy" ]] && ev_cy=$(( ${SCORE_CIBERSEGURIDAD:-0} - _pcy )) || true
@@ -3186,7 +3187,7 @@ generate_json() {
   "evolution": {
     "previous_report": ${ev_prev},
     "deltas": {
-      "global": ${ev_g}, "performance": ${ev_p}, "seo": ${ev_s}, "accesibilidad": ${ev_a},
+      "global": ${ev_g}, "performance": ${ev_p}, "seo": ${ev_s}, "geo": ${ev_geo}, "accesibilidad": ${ev_a},
       "seguridad": ${ev_sec}, "ciberseguridad": ${ev_cy}, "calidad_tecnica": ${ev_ct},
       "diseno": ${ev_d}, "ux": ${ev_u}
     }
