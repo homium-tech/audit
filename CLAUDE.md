@@ -243,8 +243,8 @@ Cada herramienta opcional tiene un fallback:
 | `sprint_plan` | sprint_1/2/3 con tareas priorizadas |
 | `correction_guide` | cards con código para hallazgos críticos/altos |
 | `perspectives` | texto por rol: ux, seo, devops, legal, cro, product |
-| `narrative` | executive_summary, conclusion |
-| `evolution` | deltas vs reporte anterior |
+| `narrative` | executive_summary, conclusion, fortalezas[], brechas[], geo_insight, proyeccion[], proximo_paso |
+| `evolution` | deltas vs reporte anterior — incluye `geo` |
 
 ## Estructura de archivos
 
@@ -259,33 +259,39 @@ CLAUDE.md                # Este archivo
 
 **Nota:** `commands/homium-audit.md` (3 líneas, instalado por `install.sh`) y `homium-audit.md` (raíz, spec completa) tienen propósitos distintos. El instalador copia `commands/homium-audit.md` a `~/.claude/commands/`. El `homium-audit.md` de raíz es el archivo de registro del skill.
 
+## Comportamiento del narrative (v1.6.2+)
+
+`generate_json()` construye los bloques de conclusión **antes** del heredoc JSONEOF. El orden de cálculo importa:
+
+1. `_dim_label()` — convierte clave técnica a label de negocio (ej: `geo` → "visibilidad en IA")
+2. Loop best/worst dim — incluye las 9 dimensiones (con GEO)
+3. `exec_summary` — específico por sitio: menciona dim fuerte, dim débil, consecuencia de negocio y mención GEO si score < 60
+4. `_narr_forte` / `_narr_bra` / `_narr_geo_txt` / `json_narr_proy` / `_narr_proximo` — bloques estructurados
+5. Evolution deltas — incluye `ev_geo` junto a los demás
+
+Los textos de brechas usan el formato: **`[nombre técnico]` — `[consecuencia de negocio]`**. Los `g_issues` de `CTX_GEO` también usan ese formato.
+
+## Detección de responsive (v1.6.2+)
+
+`UX_RESPONSIVE` usa tres señales en cascada:
+1. `@media`/`max-width:`/`min-width:` en el HTML inline
+2. Viewport meta con `width=device-width` (señal definitiva de diseño responsive)
+3. Primer archivo CSS externo enlazado — descargado y escaneado con grep
+
+`DIS_BREAKPOINTS` también escanea el primer CSS externo para contar `@media` queries.
+
+## Detección de redirect HTTP→HTTPS (v1.6.2+)
+
+`SEC_HTTPS_REDIRECT` usa curl **sin `-L`** (`-ss` solo, sin follow-redirects) para capturar el código HTTP real de `http://${domain}`. Antes usaba `http_status()` que tiene `-L` incorporado y siempre devuelve el código final (200), haciendo imposible detectar el 301 intermedio.
+
 ## Problemas conocidos / limitaciones intencionales
 
 - El flag `--dimensions` está documentado en el README y los docs del skill pero no está implementado en el parser de argumentos. Usarlo causa exit 1.
 - `analyze_geo()` corre antes de `analyze_tecnologia()` por diseño — no puede usar `TECH_CMS` ni `TECH_WEBANALYZE`. Usa greps directos en `HTML_CACHE` para la detección de CMS/plataforma.
 - La columna Δ en la tabla de evolución del MD siempre muestra `—` — el cálculo del delta real está implementado en el JSON (`evolution.deltas`) pero no en la tabla MD.
-- `ipinfo.io` (usado para geolocalización de hosting/IP) tiene un límite gratuito de 50k req/mes. En macOS, `whois` no está instalado por defecto; el fallback RDAP (`rdap.org`) puede retornar datos incompletos para algunos TLDs.
+- `ipinfo.io` (usado para geolocalización de hosting/IP) tiene fallback a `ip-api.com` cuando retorna error 4xx.
 - El score de Performance puede variar ±5 pts entre ejecuciones consecutivas por variación natural de Lighthouse (especialmente Mobile).
 - `TECH_WEBANALYZE` solo se llena si `webanalyze` está instalado globalmente — no tiene fallback `npx`.
-
-## Trabajo pendiente — audit-platform (próxima sesión)
-
-El repo hermano **homium-audit-platform** necesita actualizarse para consumir el bloque `geo` introducido en v1.6.0:
-
-- **Local:** `/Users/gustavovera/Sites/localhost/git/tavo/claude/skills/audit-platform`
-- **Repo:** https://github.com/homium-tech/audit-platform
-- **Stack:** Node.js 20 + Hono + mysql2 + pnpm
-- **DB:** MySQL en MAMP (localhost:3306, user: root, DB: homium_audit)
-
-### Qué hay que hacer en audit-platform
-
-1. **Verificar primero** que MAMP esté corriendo y la conexión MySQL funcione (`pnpm dev`)
-2. **Leer el nuevo bloque `geo`** del JSON — campos: `scores.geo`, `context.geo`, `geo.engines` (ChatGPT/Gemini/Claude/Perplexity con score+estado), `geo.acceso`, `geo.confianza`, `geo.contenido`
-3. **Actualizar la UI** para mostrar:
-   - Scores por motor de IA (4 cards: ChatGPT/Gemini/Claude/Perplexity)
-   - Gráfica radar con 9 dimensiones (antes era 8 — agregar GEO)
-   - Señales de confianza y contenido GEO
-4. **Estado anterior:** Fase 1 implementada (endpoints POST/GET/DELETE de auditorías), pendiente prueba de conexión MySQL
 
 ## Reglas al agregar datos nuevos
 

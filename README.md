@@ -196,6 +196,22 @@ Este repo es el **motor de recolección de datos**. Para el dashboard, gestión 
 
 ## 📋 Changelog
 
+### v1.6.2 patch — Fixes de exactitud + narrative de negocio (junio 2026)
+
+**Fixes de falsos positivos:**
+- **HTTP→HTTPS redirect**: la detección ahora usa curl sin `-L` para capturar el 301 real, no el 200 final tras seguir la cadena de redirects.
+- **Detección responsive**: escanea viewport meta (`width=device-width`) y el primer CSS externo enlazado — antes solo buscaba `@media` en el HTML inline, fallando en sitios con CSS en archivos externos.
+- **Hosting lookup**: fallback a `ip-api.com` cuando `ipinfo.io` devuelve error de rate-limit (4xx).
+- **WHOIS registrar/nameservers/status**: fix de indentación en grep — Verisign/GoDaddy prefixa cada línea con 3 espacios que bloqueaban el match.
+- **Fecha de creación de dominio**: prioriza `Creation Date:` sobre `created:` para evitar retornar `1985-01-01` (fecha de creación de ICANN).
+
+**Narrative en lenguaje de negocio:**
+- `executive_summary`: ahora específico por sitio — menciona dimensión más fuerte, dimensión con mayor oportunidad y consecuencia de negocio. Incluye mención GEO si score < 60.
+- `geo.context`: formato `[nombre técnico] — [consecuencia de negocio]` en todos los issues.
+- Brechas de `narrative.brechas`: headers específicos ausentes, trackers detectados, score de email deliverability con nombre del dominio.
+- `narrative.geo_insight`: diferencia explícita GEO vs SEO ("Mientras el SEO mide si Google te indexa, GEO mide si ChatGPT, Gemini, Claude o Perplexity te citan...").
+- `evolution.deltas` ahora incluye `geo` junto a las demás dimensiones.
+
 ### v1.6.2 — Conclusión Homium · Sin tiempos · Sin tabla duplicada · Skill actualizado
 
 - **Conclusión firmada:** título `## 💬 Conclusión — Homium` y apertura "De acuerdo al análisis realizado por **Homium**..." — coherente con identidad de marca.
