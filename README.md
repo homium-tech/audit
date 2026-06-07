@@ -30,8 +30,15 @@ Genera un reporte **JSON estructurado** junto al `.md` en cada auditoría — ba
 
 ## 🚀 Instalación
 
+> **Repo privado** — necesitas acceso al repositorio antes de instalar.
+
 ```bash
-curl -sSL https://raw.githubusercontent.com/homium-tech/audit/main/install.sh | bash
+# 1. Clonar el repo (requiere acceso a homium-tech/audit)
+gh repo clone homium-tech/audit
+cd audit
+
+# 2. Ejecutar el instalador
+bash install.sh
 ```
 
 El instalador detecta automáticamente el sistema operativo y configura todo.
@@ -39,7 +46,8 @@ El instalador detecta automáticamente el sistema operativo y configura todo.
 ### Actualizar a la última versión
 
 ```bash
-homium-audit --update
+# Desde el directorio clonado
+git pull && bash install.sh
 ```
 
 ---
@@ -121,8 +129,8 @@ homium-audit https://ejemplo.com --upload
 # Ver versión instalada
 homium-audit --version
 
-# Actualizar a la última versión
-homium-audit --update
+# Actualizar a la última versión (desde el directorio clonado)
+# git pull && bash install.sh
 ```
 
 ### Dimensiones disponibles para `--dimensions`
