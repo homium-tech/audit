@@ -3400,23 +3400,11 @@ main() {
 }
 
 # ─── Upload a homium-audit-platform ──────────────────────────────────────────
-upload_to_platform() {
-  local json_file="$1"
+# ── Helpers de configuración ──────────────────────────────────────────────────
 
-  if [[ ! -f "$PLATFORM_CONFIG" ]]; then
-    echo -e "\n${YELLOW}${WARN}  No se encontró ~/.homium-audit.conf${RESET}"
-    echo -e "  Crea el archivo con tu token de API:"
-    echo -e ""
-    echo -e "  ${DIM}# ~/.homium-audit.conf${RESET}"
-    echo -e "  ${DIM}PLATFORM_URL=https://audit-platform.homium.tech${RESET}"
-    echo -e "  ${DIM}PLATFORM_TOKEN=hap_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx${RESET}"
-    echo -e ""
-    echo -e "  Genera un token en: ${CYAN}https://audit-platform.homium.tech/tokens${RESET}"
-    return 1
-  fi
-
-  # Leer config (solo PLATFORM_URL y PLATFORM_TOKEN para evitar ejecución de código)
-  local PLATFORM_URL="" PLATFORM_TOKEN="" AUTO_UPLOAD=""
+_read_platform_config() {
+  PLATFORM_URL=""; PLATFORM_TOKEN=""
+  [[ ! -f "$PLATFORM_CONFIG" ]] && return
   while IFS='=' read -r key val; do
     [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
     key="${key// /}"; val="${val// /}"
@@ -3425,14 +3413,41 @@ upload_to_platform() {
       PLATFORM_TOKEN) PLATFORM_TOKEN="$val" ;;
     esac
   done < "$PLATFORM_CONFIG"
+}
 
-  if [[ -z "$PLATFORM_URL" || -z "$PLATFORM_TOKEN" ]]; then
-    echo -e "\n${RED}${CROSS}  ~/.homium-audit.conf incompleto — faltan PLATFORM_URL o PLATFORM_TOKEN${RESET}" >&2
-    return 1
+_save_platform_config() {
+  printf 'PLATFORM_URL=%s\nPLATFORM_TOKEN=%s\n' "$PLATFORM_URL" "$PLATFORM_TOKEN" > "$PLATFORM_CONFIG"
+  chmod 600 "$PLATFORM_CONFIG"
+  ok "Config guardada en ~/.homium-audit.conf"
+}
+
+_ask_platform_config() {
+  echo -e "\n${CYAN}  Primera configuración — ingresa los datos de la plataforma:${RESET}"
+  local default_url="https://audit-platform.homium.tech"
+  printf "  URL [%s]: " "$default_url"
+  read -r _input_url </dev/tty
+  PLATFORM_URL="${_input_url:-$default_url}"
+  printf "  API Token: "
+  read -r PLATFORM_TOKEN </dev/tty
+  if [[ -z "$PLATFORM_TOKEN" ]]; then
+    echo -e "  ${RED}${CROSS}  Token requerido.${RESET}" >&2; return 1
   fi
+  _save_platform_config
+}
 
-  step "Subiendo auditoría a la plataforma"
+_ask_new_token() {
+  echo -e "\n  ${RED}${CROSS}  Token inválido o revocado.${RESET}"
+  echo -e "  Genera uno nuevo en: ${CYAN}${PLATFORM_URL}/tokens${RESET}"
+  printf "  Ingresa el nuevo API Token: "
+  read -r PLATFORM_TOKEN </dev/tty
+  if [[ -z "$PLATFORM_TOKEN" ]]; then
+    echo -e "  ${RED}${CROSS}  Token requerido.${RESET}" >&2; return 1
+  fi
+  _save_platform_config
+}
 
+_do_post() {
+  local json_file="$1"
   local curl_args=(
     -s -w "\n%{http_code}"
     -X POST "${PLATFORM_URL}/api/audits"
@@ -3443,21 +3458,45 @@ upload_to_platform() {
     curl_args+=(-F "screenshot_desktop=@${SCREENSHOT_DESKTOP}")
   [[ -n "${SCREENSHOT_MOBILE:-}" && -f "$SCREENSHOT_MOBILE" ]] && \
     curl_args+=(-F "screenshot_mobile=@${SCREENSHOT_MOBILE}")
+  curl "${curl_args[@]}" 2>/dev/null
+}
 
-  local full_response http_code body
-  full_response=$(curl "${curl_args[@]}" 2>/dev/null)
-  http_code=$(printf '%s' "$full_response" | tail -1)
-  body=$(printf '%s' "$full_response" | head -n -1)
+# ── Upload principal ───────────────────────────────────────────────────────────
 
+upload_to_platform() {
+  local json_file="$1"
+
+  # 1. Leer config existente
+  _read_platform_config
+
+  # 2. Si falta URL o token → pedir interactivamente
+  if [[ -z "$PLATFORM_URL" || -z "$PLATFORM_TOKEN" ]]; then
+    _ask_platform_config || return 1
+  fi
+
+  step "Subiendo auditoría a la plataforma"
+
+  # 3. Primer intento
+  local response http_code body
+  response=$(_do_post "$json_file")
+  http_code=$(printf '%s' "$response" | tail -1)
+  body=$(printf '%s' "$response" | head -n -1)
+
+  # 4. Token inválido → pedir nuevo y reintentar una vez
+  if [[ "$http_code" == "401" ]]; then
+    _ask_new_token || return 1
+    response=$(_do_post "$json_file")
+    http_code=$(printf '%s' "$response" | tail -1)
+    body=$(printf '%s' "$response" | head -n -1)
+  fi
+
+  # 5. Resultado
   if [[ "$http_code" == "201" ]]; then
-    local token
-    token=$(printf '%s' "$body" | grep -o '"public_token":"[^"]*"' | cut -d'"' -f4)
+    local pub_token
+    pub_token=$(printf '%s' "$body" | grep -o '"public_token":"[^"]*"' | cut -d'"' -f4)
     ok "Auditoría subida correctamente"
-    [[ -n "$token" ]] && \
-      echo -e "  ${CYAN}${ARROW}  Reporte: ${BOLD}${PLATFORM_URL}/report/${token}${RESET}"
-  elif [[ "$http_code" == "401" ]]; then
-    echo -e "  ${RED}${CROSS}  Token inválido o revocado (HTTP 401)${RESET}" >&2
-    echo -e "  Genera un nuevo token en: ${CYAN}${PLATFORM_URL}/tokens${RESET}" >&2
+    [[ -n "$pub_token" ]] && \
+      echo -e "  ${CYAN}${ARROW}  Reporte: ${BOLD}${PLATFORM_URL}/report/${pub_token}${RESET}"
   else
     echo -e "  ${RED}${CROSS}  Error al subir (HTTP ${http_code:-sin respuesta})${RESET}" >&2
     [[ -n "$body" ]] && echo -e "  ${DIM}${body}${RESET}" >&2
