@@ -67,18 +67,23 @@ usage() {
   echo -e "    --sector <tipo>        Sector del sitio: ecommerce|saas|blog|landing|portfolio"
   echo -e "    --threshold <score>    Exit 1 si score global < valor (útil en CI/CD)"
   echo -e "    --quiet                Solo errores críticos en stdout"
+  echo -e "    --upload               Subir auditoría a homium-audit-platform al finalizar"
   echo -e "    --version              Muestra la versión instalada"
   echo -e "    --update               Actualiza homium-audit a la última versión"
   echo -e "    --help                 Muestra esta ayuda"
   echo -e ""
   echo -e "  ${CYAN}Dimensiones disponibles:${RESET} performance, seo, accesibilidad, seguridad,"
   echo -e "    ciberseguridad, calidad, diseno, ux"
+  echo -e ""
+  echo -e "  ${CYAN}Upload automático:${RESET} configura ~/.homium-audit.conf con PLATFORM_URL y PLATFORM_TOKEN"
+  echo -e "    Genera un token en: https://audit-platform.homium.tech/tokens"
   exit 0
 }
 
 # ─── Argument Parsing ─────────────────────────────────────────────────────────
 URL=""; OUTPUT_DIR="$AUDIT_DIR"; COMPARE_FILE=""; QUIET=false
-DIMENSIONS=""; SECTOR=""; THRESHOLD=""
+DIMENSIONS=""; SECTOR=""; THRESHOLD=""; UPLOAD=false
+PLATFORM_CONFIG="${HOME}/.homium-audit.conf"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -101,6 +106,7 @@ while [[ $# -gt 0 ]]; do
     --sector)        SECTOR="$2"; shift 2 ;;
     --threshold)     THRESHOLD="$2"; shift 2 ;;
     --quiet)         QUIET=true; shift ;;
+    --upload)        UPLOAD=true; shift ;;
     http*)           URL="$1"; shift ;;
     *)               echo -e "${RED}Opción desconocida: $1${RESET}"; usage ;;
   esac
@@ -3376,9 +3382,86 @@ main() {
   progress_bar "Diseño         " "$SCORE_DISENO"
   progress_bar "UX             " "$SCORE_UX"
   echo ""
-  echo -e "  ${DIM}${ARROW} Reporte: ${OUT_FILE}${RESET}"
+  echo -e "  ${DIM}${ARROW} Reporte:  ${OUT_FILE}${RESET}"
+  echo -e "  ${DIM}${ARROW} JSON:     ${JSON_FILE}${RESET}"
   [[ -n "${PREV_REPORT:-}" ]] && echo -e "  ${DIM}${ARROW} Comparado con: ${PREV_REPORT}${RESET}"
   echo ""
+
+  # ── Auto-upload ─────────────────────────────────────────────────────────
+  # Activa si: --upload explícito O AUTO_UPLOAD=true en el config
+  local do_upload=false
+  [[ "$UPLOAD" == true ]] && do_upload=true
+  if [[ "$do_upload" == false && -f "$PLATFORM_CONFIG" ]]; then
+    local _auto
+    _auto=$(grep -E '^AUTO_UPLOAD=' "$PLATFORM_CONFIG" | cut -d= -f2 | tr -d '[:space:]"' || echo "")
+    [[ "$_auto" == "true" ]] && do_upload=true
+  fi
+  [[ "$do_upload" == true ]] && upload_to_platform "$JSON_FILE"
+}
+
+# ─── Upload a homium-audit-platform ──────────────────────────────────────────
+upload_to_platform() {
+  local json_file="$1"
+
+  if [[ ! -f "$PLATFORM_CONFIG" ]]; then
+    echo -e "\n${YELLOW}${WARN}  No se encontró ~/.homium-audit.conf${RESET}"
+    echo -e "  Crea el archivo con tu token de API:"
+    echo -e ""
+    echo -e "  ${DIM}# ~/.homium-audit.conf${RESET}"
+    echo -e "  ${DIM}PLATFORM_URL=https://audit-platform.homium.tech${RESET}"
+    echo -e "  ${DIM}PLATFORM_TOKEN=hap_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx${RESET}"
+    echo -e ""
+    echo -e "  Genera un token en: ${CYAN}https://audit-platform.homium.tech/tokens${RESET}"
+    return 1
+  fi
+
+  # Leer config (solo PLATFORM_URL y PLATFORM_TOKEN para evitar ejecución de código)
+  local PLATFORM_URL="" PLATFORM_TOKEN="" AUTO_UPLOAD=""
+  while IFS='=' read -r key val; do
+    [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
+    key="${key// /}"; val="${val// /}"
+    case "$key" in
+      PLATFORM_URL)   PLATFORM_URL="$val"   ;;
+      PLATFORM_TOKEN) PLATFORM_TOKEN="$val" ;;
+    esac
+  done < "$PLATFORM_CONFIG"
+
+  if [[ -z "$PLATFORM_URL" || -z "$PLATFORM_TOKEN" ]]; then
+    echo -e "\n${RED}${CROSS}  ~/.homium-audit.conf incompleto — faltan PLATFORM_URL o PLATFORM_TOKEN${RESET}" >&2
+    return 1
+  fi
+
+  step "Subiendo auditoría a la plataforma"
+
+  local curl_args=(
+    -s -w "\n%{http_code}"
+    -X POST "${PLATFORM_URL}/api/audits"
+    -H "Authorization: Bearer ${PLATFORM_TOKEN}"
+    -F "data=@${json_file};type=application/json"
+  )
+  [[ -n "${SCREENSHOT_DESKTOP:-}" && -f "$SCREENSHOT_DESKTOP" ]] && \
+    curl_args+=(-F "screenshot_desktop=@${SCREENSHOT_DESKTOP}")
+  [[ -n "${SCREENSHOT_MOBILE:-}" && -f "$SCREENSHOT_MOBILE" ]] && \
+    curl_args+=(-F "screenshot_mobile=@${SCREENSHOT_MOBILE}")
+
+  local full_response http_code body
+  full_response=$(curl "${curl_args[@]}" 2>/dev/null)
+  http_code=$(printf '%s' "$full_response" | tail -1)
+  body=$(printf '%s' "$full_response" | head -n -1)
+
+  if [[ "$http_code" == "201" ]]; then
+    local token
+    token=$(printf '%s' "$body" | grep -o '"public_token":"[^"]*"' | cut -d'"' -f4)
+    ok "Auditoría subida correctamente"
+    [[ -n "$token" ]] && \
+      echo -e "  ${CYAN}${ARROW}  Reporte: ${BOLD}${PLATFORM_URL}/report/${token}${RESET}"
+  elif [[ "$http_code" == "401" ]]; then
+    echo -e "  ${RED}${CROSS}  Token inválido o revocado (HTTP 401)${RESET}" >&2
+    echo -e "  Genera un nuevo token en: ${CYAN}${PLATFORM_URL}/tokens${RESET}" >&2
+  else
+    echo -e "  ${RED}${CROSS}  Error al subir (HTTP ${http_code:-sin respuesta})${RESET}" >&2
+    [[ -n "$body" ]] && echo -e "  ${DIM}${body}${RESET}" >&2
+  fi
 }
 
 main "$@"
