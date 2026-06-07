@@ -24,6 +24,9 @@ bash homium-audit.sh https://ejemplo.com --output /tmp/test-audits
 # Probar modo silencioso
 bash homium-audit.sh https://ejemplo.com --quiet
 
+# Subir a la plataforma al finalizar (requiere ~/.homium-audit.conf)
+bash homium-audit.sh https://ejemplo.com --upload
+
 # Ejecutar el instalador localmente (usa el script local, no GitHub)
 bash install.sh
 ```
@@ -283,6 +286,21 @@ Los textos de brechas usan el formato: **`[nombre técnico]` — `[consecuencia 
 ## Detección de redirect HTTP→HTTPS (v1.6.2+)
 
 `SEC_HTTPS_REDIRECT` usa curl **sin `-L`** (`-ss` solo, sin follow-redirects) para capturar el código HTTP real de `http://${domain}`. Antes usaba `http_status()` que tiene `-L` incorporado y siempre devuelve el código final (200), haciendo imposible detectar el 301 intermedio.
+
+## Integración con homium-audit-platform (v1.7.0+)
+
+El flag `--upload` sube el JSON + screenshots a la plataforma al finalizar. Requiere `~/.homium-audit.conf`:
+
+```
+PLATFORM_URL=https://audit-platform.homium.tech
+PLATFORM_TOKEN=hap_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+AUTO_UPLOAD=true   # opcional — sube siempre sin --upload
+```
+
+**Seguridad:** el config se parsea línea a línea (sin `source`) para evitar ejecución de código. Solo se leen `PLATFORM_URL`, `PLATFORM_TOKEN` y `AUTO_UPLOAD`. El token se pasa como `Authorization: Bearer` header.
+
+Genera tokens en: https://audit-platform.homium.tech/tokens
+Docs completas: `INTEGRATION.md` en el repo de la plataforma.
 
 ## Problemas conocidos / limitaciones intencionales
 

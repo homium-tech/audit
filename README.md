@@ -115,6 +115,9 @@ homium-audit https://ejemplo.com --threshold 70
 # Modo silencioso
 homium-audit https://ejemplo.com --quiet
 
+# Subir a homium-audit-platform al finalizar (requiere ~/.homium-audit.conf)
+homium-audit https://ejemplo.com --upload
+
 # Ver versión instalada
 homium-audit --version
 
@@ -192,9 +195,34 @@ Este repo es el **motor de recolección de datos**. Para el dashboard, gestión 
 
 **[homium-audit-platform](https://github.com/homium-tech/audit-platform)** — plataforma web que consume el JSON generado por este script.
 
+### Integración automática con la plataforma
+
+Con `--upload`, el CLI sube la auditoría directamente al finalizar:
+
+```bash
+# 1. Genera un API token en https://audit-platform.homium.tech/tokens
+# 2. Configura ~/.homium-audit.conf:
+#    PLATFORM_URL=https://audit-platform.homium.tech
+#    PLATFORM_TOKEN=hap_xxxx...
+# 3. Audita y sube en un solo paso:
+homium-audit https://ejemplo.com --upload
+```
+
+Para subir siempre sin el flag, agrega `AUTO_UPLOAD=true` al config.
+Documentación completa: [INTEGRATION.md](https://github.com/homium-tech/audit-platform/blob/main/INTEGRATION.md)
+
 ---
 
 ## 📋 Changelog
+
+### v1.7.0 — Auto-upload a homium-audit-platform (junio 2026)
+
+- **Flag `--upload`**: sube el JSON + screenshots a la plataforma al finalizar la auditoría.
+- **`~/.homium-audit.conf`**: archivo de configuración con `PLATFORM_URL`, `PLATFORM_TOKEN` y `AUTO_UPLOAD` opcional.
+- **`AUTO_UPLOAD=true`**: sube automáticamente sin necesidad del flag en cada ejecución.
+- Autenticación via Bearer token (`hap_xxxx`) — generado en `/tokens` de la plataforma.
+- Parseo seguro del config (sin `source` — evita ejecución de código arbitrario).
+- Mensajes de error claros en 401 con link directo para regenerar el token.
 
 ### v1.6.2 patch — Fixes de exactitud + narrative de negocio (junio 2026)
 
