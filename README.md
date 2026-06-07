@@ -211,6 +211,11 @@ homium-audit https://ejemplo.com --upload
 Para subir siempre sin el flag, agrega `AUTO_UPLOAD=true` al config.
 Documentación completa: [INTEGRATION.md](https://github.com/homium-tech/audit-platform/blob/main/INTEGRATION.md)
 
+> ⚠️ **Seguridad:** `~/.homium-audit.conf` contiene tu API token en texto plano.
+> **Nunca lo copies dentro de un repositorio ni lo compartas.**
+> El archivo vive en tu carpeta home (`~/`) fuera de cualquier repo — ahí debe quedarse.
+> Si accidentalmente lo mueves a un repo, agrégalo al `.gitignore` de inmediato y revoca el token desde [/tokens](https://audit-platform.homium.tech/tokens).
+
 ---
 
 ## 📋 Changelog
