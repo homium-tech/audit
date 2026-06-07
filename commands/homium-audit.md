@@ -1,12 +1,34 @@
 Eres un auditor web experto usando la herramienta homium-audit.
 
-<url>$ARGUMENTS</url>
+<arguments>$ARGUMENTS</arguments>
 
-Si la URL en <url> está vacía o no es una URL válida, pregunta al usuario:
-"🌐 **Digita la página web a auditar:**"
-Y espera su respuesta antes de continuar.
+## Paso 1 — Parsear argumentos
 
-Si hay una URL válida, ejecuta:
+De <arguments> extrae:
+- `URL`: el valor que empieza con `http` — puede tener trailing slash
+- `FLAGS`: todo lo demás (`--upload`, `--sector ecommerce`, `--quiet`, `--dimensions seo,performance`, etc.)
+
+Si no hay URL válida, pregunta: "🌐 **Digita la página web a auditar:**" y espera respuesta antes de continuar.
+
+## Paso 2 — Verificar --upload
+
+Si `FLAGS` contiene `--upload` y el archivo `~/.homium-audit.conf` NO existe:
+
+> ⚠️ **Primero configura tu token de API**
+>
+> 1. Ve a **https://audit-platform.homium.tech/tokens** y genera un token
+> 2. Desde tu **terminal** (no desde aquí), corre una vez:
+>    ```bash
+>    homium-audit <URL> --upload
+>    ```
+>    Te pedirá el token y lo guardará automáticamente
+> 3. Luego ya podrás usar `/homium-audit <URL> --upload` desde Claude Code
+
+No continúes hasta que el config exista.
+
+## Paso 3 — Ejecutar auditoría
+
+Localiza el script y ejecútalo pasando la URL entre comillas y los FLAGS sin comillas:
 
 ```bash
 SCRIPT_PATH=""
@@ -20,23 +42,24 @@ done
 
 if [[ -z "$SCRIPT_PATH" ]]; then
   echo "homium-audit no está instalado."
-  echo "Instala con: curl -sSL https://raw.githubusercontent.com/homium-tech/audit/main/install.sh | bash"
+  echo "Instala con: gh repo clone homium-tech/audit && cd audit && bash install.sh"
   exit 1
 fi
 
-bash "$SCRIPT_PATH" "$ARGUMENTS" 2>&1
+bash "$SCRIPT_PATH" "URL_AQUI" FLAGS_AQUI 2>&1
 ```
 
-Una vez ejecutado, encuentra el reporte JSON más reciente en `~/audits/` y presenta el siguiente resumen estructurado en Markdown (NO muestres el reporte completo):
+Sustituye `URL_AQUI` con la URL exacta (entre comillas) y `FLAGS_AQUI` con los flags parseados sin comillas.
 
-1. Extrae del JSON: score global, scores por dimensión, hallazgos críticos y paths de archivos.
-2. Muestra el resumen en este formato:
+## Paso 4 — Presentar resultados
+
+Encuentra el JSON más reciente en `~/audits/` y presenta este resumen:
 
 ---
 
 ✅ **Auditoría completada — [dominio]**
 
-**Score Global: [score]/100 [badge]**
+**Score Global: [score]/100** 🟢≥90 · 🟡≥75 · 🟠≥50 · 🔴<50
 
 | Dimensión | Score | Estado |
 |-----------|:-----:|--------|
@@ -58,7 +81,12 @@ Una vez ejecutado, encuentra el reporte JSON más reciente en `~/audits/` y pres
 
 ---
 
-## ¿Qué hacer ahora?
+Si se usó `--upload`, busca en el output la línea `→  Reporte:` y muestra:
 
-- 📊 **Subir al dashboard** — carga el archivo `.json` en [homium-audit-platform](https://github.com/homium-tech/audit-platform) para visualizar el reporte completo.
-- 🔄 **Re-auditar** — ejecuta `/homium-audit [URL]` después de implementar las mejoras para medir el avance.
+🚀 **Reporte en línea:** [URL completa]
+
+Si no se usó `--upload`:
+
+## ¿Qué hacer ahora?
+- 🚀 **Subir a la plataforma** — `/homium-audit [URL] --upload`
+- 🔄 **Re-auditar** — después de implementar mejoras para medir el avance
