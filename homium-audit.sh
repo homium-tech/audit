@@ -3480,7 +3480,7 @@ upload_to_platform() {
   local response http_code body
   response=$(_do_post "$json_file")
   http_code=$(printf '%s' "$response" | tail -1)
-  body=$(printf '%s' "$response" | head -n -1)
+  body=$(printf '%s' "$response" | sed '$d')
 
   # 4. Token inválido → pedir nuevo y reintentar una vez
   if [[ "$http_code" == "401" ]]; then
