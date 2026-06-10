@@ -6,6 +6,17 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
 ---
 
+## [1.7.1] — junio 2026
+
+### Corregido
+- **HTTP/2 siempre penalizado** — `curl -w "%{http_version}"` devuelve `"2.0"` y `"3.0"`, no `"2"` y `"3"`. La comparación exacta penalizaba −10 pts de performance a todos los sitios modernos con HTTP/2.
+- **Alt text falso positivo** — `grep -cv 'alt='` detectaba `class="gallery-alt"` como si fuera atributo alt. Corregido con ` alt=` (espacio previo) para match exclusivo del atributo.
+- **Skip link falso positivo** — buscar la palabra `skip` o `saltar` en cualquier parte del HTML marcaba `ACC_SKIP=true` aunque no hubiera skip navigation. Ahora busca patrones específicos: `href="#skip"`, `class="skip-link"`, `id="skip"`.
+- **x.com no detectado como red social** — Twitter migró a `x.com` en 2023. Sitios que actualizaron sus links sociales no se detectaban. Agregado `x.com/[handle]` al patrón.
+- **GA4 no detectado como tracker** — el patrón buscaba `ga.js` (Universal Analytics, deprecado julio 2023). GA4 se sirve vía `googletagmanager.com/gtag`. Agregado al patrón de detección.
+
+---
+
 ## [1.7.0] — junio 2026
 
 ### Agregado
