@@ -304,12 +304,15 @@ Docs completas: `INTEGRATION.md` en el repo de la plataforma.
 
 ## Problemas conocidos / limitaciones intencionales
 
-- El flag `--dimensions` está documentado en el README y los docs del skill pero no está implementado en el parser de argumentos. Usarlo causa exit 1.
 - `analyze_geo()` corre antes de `analyze_tecnologia()` por diseño — no puede usar `TECH_CMS` ni `TECH_WEBANALYZE`. Usa greps directos en `HTML_CACHE` para la detección de CMS/plataforma.
-- La columna Δ en la tabla de evolución del MD siempre muestra `—` — el cálculo del delta real está implementado en el JSON (`evolution.deltas`) pero no en la tabla MD.
 - `ipinfo.io` (usado para geolocalización de hosting/IP) tiene fallback a `ip-api.com` cuando retorna error 4xx.
 - El score de Performance puede variar ±5 pts entre ejecuciones consecutivas por variación natural de Lighthouse (especialmente Mobile).
 - `TECH_WEBANALYZE` solo se llena si `webanalyze` está instalado globalmente — no tiene fallback `npx`.
+
+## Notas de implementación
+
+- El flag `--dimensions` está implementado: `should_run()` en línea ~118 filtra qué `analyze_*` corren. El nombre de la dimensión para calidad técnica es `calidad` (no `calidad_tecnica`).
+- La columna Δ en la tabla de evolución del MD calcula el delta real vía `score_delta()` cuando existe un reporte anterior (`PREV_REPORT`). Si no hay reporte previo, muestra `—`.
 
 ## Reglas al agregar datos nuevos
 
