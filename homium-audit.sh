@@ -542,7 +542,7 @@ analyze_performance() {
   local protocol
   protocol=$(curl -sSLo /dev/null --max-time "$TIMEOUT" -w "%{http_version}" "$URL" 2>/dev/null) || protocol="1.1"
   PERF_PROTOCOL="HTTP/${protocol:-1.1}"
-  [[ "$protocol" != "2" && "$protocol" != "3" ]] && score=$((score-10)) || true
+  [[ "$protocol" != "2" && "$protocol" != "2.0" && "$protocol" != "3" && "$protocol" != "3.0" ]] && score=$((score-10)) || true
 
   info "Verificando compresión..."
   local enc_header
@@ -771,7 +771,7 @@ analyze_accesibilidad() {
 
   local imgs_total imgs_no_alt
   imgs_total=$(echo "$html" | grep -ic '<img' 2>/dev/null | tr -d '[:space:]') || imgs_total=0
-  imgs_no_alt=$(echo "$html" | grep -i '<img' | grep -cv 'alt=' 2>/dev/null | tr -d '[:space:]') || imgs_no_alt=0
+  imgs_no_alt=$(echo "$html" | grep -i '<img' | grep -cvE ' alt=' 2>/dev/null | tr -d '[:space:]') || imgs_no_alt=0
   ACC_IMGS_TOTAL=${imgs_total:-0}; ACC_IMGS_NO_ALT=${imgs_no_alt:-0}
   if (( ACC_IMGS_TOTAL > 0 && ACC_IMGS_NO_ALT > 0 )); then
     local pen=$(( ACC_IMGS_NO_ALT * 5 ))
@@ -780,7 +780,7 @@ analyze_accesibilidad() {
   fi
 
   ACC_ARIA=false;  grep -qi 'aria-label\|aria-labelledby\|role=' <<< "$html" && ACC_ARIA=true  || true
-  ACC_SKIP=false;  grep -qi 'skip\|saltar' <<< "$html"                        && ACC_SKIP=true  || true
+  ACC_SKIP=false;  grep -qiE 'href="#[^"]*skip|href="#[^"]*saltar|class="[^"]*skip-link|id="skip' <<< "$html" && ACC_SKIP=true || true
   [[ "$ACC_ARIA" == false ]] && score=$((score-15)) || true
   [[ "$ACC_SKIP" == false ]] && score=$((score-10)) || true
 
@@ -1397,7 +1397,7 @@ analyze_ux() {
 
   UX_500=$(http_status "${URL%/}/error-500-audit-xyz")
   UX_BREADCRUMBS=false; grep -qi 'breadcrumb\|aria-label.*breadcrumb' <<< "$html" && UX_BREADCRUMBS=true || true
-  UX_SOCIAL=false;      grep -qi 'twitter\.com\|linkedin\.com\|instagram\.com\|facebook\.com' <<< "$html" && UX_SOCIAL=true || true
+  UX_SOCIAL=false;      grep -qiE 'twitter\.com|x\.com/[a-zA-Z]|linkedin\.com|instagram\.com|facebook\.com' <<< "$html" && UX_SOCIAL=true || true
   UX_CHAT=false;        grep -qi 'intercom\|drift\|zendesk\|crisp\|tidio\|freshchat' <<< "$html" && UX_CHAT=true || true
   UX_FORM_VALIDATION=false; grep -qi 'required\|pattern=\|minlength=' <<< "$html" && UX_FORM_VALIDATION=true || true
   UX_LANG_SWITCH=false; grep -qi 'lang-switch\|language-selector\|idioma\|hreflang' <<< "$html" && UX_LANG_SWITCH=true || true
@@ -1421,7 +1421,7 @@ analyze_legal() {
   LEGAL_GDPR=false;    grep -qi "gdpr\|rgpd\|reglamento.*datos" <<< "$html"           && LEGAL_GDPR=true    || true
 
   LEGAL_TRACKERS=()
-  grep -qi "google-analytics\|gtag\|ga.js" <<< "$html" && LEGAL_TRACKERS+=("Google Analytics") || true
+  grep -qiE "google-analytics|gtag\.js|ga\.js|googletagmanager\.com/gtag" <<< "$html" && LEGAL_TRACKERS+=("Google Analytics") || true
   grep -qi "facebook\|fbevents\|fbq(" <<< "$html"      && LEGAL_TRACKERS+=("Facebook Pixel")   || true
   grep -qi "hotjar" <<< "$html"                         && LEGAL_TRACKERS+=("Hotjar")           || true
   grep -qi "mixpanel" <<< "$html"                       && LEGAL_TRACKERS+=("Mixpanel")         || true
