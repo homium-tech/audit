@@ -219,6 +219,7 @@ homium-audit/
 ├── CLAUDE.md                # Guía para Claude Code con arquitectura y decisiones técnicas
 ├── CHANGELOG.md             # Historial de cambios por versión
 ├── ROADMAP-SECURITY.md      # Mejoras de seguridad planificadas con análisis de brechas
+├── ROADMAP-GEO.md           # Plan GEO v2: Copilot, answer-readiness, JSON-LD completeness
 └── README.md
 ```
 
