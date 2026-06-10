@@ -55,7 +55,7 @@ HTMLHINT_CMD=$(resolve_cmd "htmlhint" "htmlhint")
 SSLCHECK_CMD=$(resolve_cmd "ssl-checker" "ssl-checker")
 
 # ─── Usage ───────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="1.7.1"
+SCRIPT_VERSION="1.7.2"
 
 usage() {
   echo -e "${BOLD}homium-audit${RESET} v${SCRIPT_VERSION} — Auditoría profesional de sitios web"
@@ -584,7 +584,7 @@ analyze_performance() {
   PERF_JS_COUNT=${PERF_JS_COUNT:-0}; PERF_CSS_COUNT=${PERF_CSS_COUNT:-0}; PERF_IMG_COUNT=${PERF_IMG_COUNT:-0}
   PERF_LAZY_COUNT=$(echo "$HTML_CACHE" | grep -ic 'loading="lazy"' 2>/dev/null | tr -d '[:space:]') || PERF_LAZY_COUNT=0
   PERF_SRCSET_COUNT=$(echo "$HTML_CACHE" | grep -ic 'srcset=' 2>/dev/null | tr -d '[:space:]') || PERF_SRCSET_COUNT=0
-  PERF_WEBP_COUNT=$(echo "$HTML_CACHE" | grep -ciE '\.(webp|avif)"' 2>/dev/null | tr -d '[:space:]') || PERF_WEBP_COUNT=0
+  PERF_WEBP_COUNT=$(echo "$HTML_CACHE" | grep -ciE '\.(webp|avif)["\s]|type="image/(webp|avif)"|srcset="[^"]*\.(webp|avif)' 2>/dev/null | tr -d '[:space:]') || PERF_WEBP_COUNT=0
   PERF_FONTS_COUNT=$(echo "$HTML_CACHE" | grep -ciE '\.(woff2?|ttf|otf)"' 2>/dev/null | tr -d '[:space:]') || PERF_FONTS_COUNT=0
   PERF_LAZY_COUNT=${PERF_LAZY_COUNT:-0}; PERF_SRCSET_COUNT=${PERF_SRCSET_COUNT:-0}
   PERF_WEBP_COUNT=${PERF_WEBP_COUNT:-0}; PERF_FONTS_COUNT=${PERF_FONTS_COUNT:-0}
@@ -638,7 +638,7 @@ analyze_calidad_tecnica() {
   [[ "$CT_TITLE"     == false ]] && score=$((score-20)) || true
   [[ "$CT_CANONICAL" == false ]] && score=$((score-10)) || true
 
-  CT_INLINE_SCRIPTS=$(echo "$html" | grep -c '<script>' 2>/dev/null | tr -d '[:space:]') || CT_INLINE_SCRIPTS=0
+  CT_INLINE_SCRIPTS=$(echo "$html" | grep -ciE '<script( type="(text/javascript|module|text/template)"| defer| async)?>' 2>/dev/null | tr -d '[:space:]') || CT_INLINE_SCRIPTS=0
   CT_INLINE_STYLES=$(echo  "$html" | grep -c 'style="'  2>/dev/null | tr -d '[:space:]') || CT_INLINE_STYLES=0
   CT_INLINE_SCRIPTS=${CT_INLINE_SCRIPTS:-0}; CT_INLINE_STYLES=${CT_INLINE_STYLES:-0}
   (( CT_INLINE_SCRIPTS > 5  )) && score=$((score-10)) || true
@@ -1035,7 +1035,7 @@ analyze_diseno() {
 
   DIS_FONTS=false;     grep -qi "fonts.googleapis\|font-face" <<< "$html"        && DIS_FONTS=true     || true
   DIS_FAVICON=false;   grep -qi 'rel="icon"\|rel="shortcut icon"' <<< "$html"    && DIS_FAVICON=true   || true
-  DIS_DARK_MODE=false; grep -qi "prefers-color-scheme\|color-scheme" <<< "$html" && DIS_DARK_MODE=true || true
+  DIS_DARK_MODE=false; grep -qiE 'prefers-color-scheme|color-scheme|data-theme=|class="[^"]*dark[^"]*"' <<< "$html" && DIS_DARK_MODE=true || true
   [[ "$DIS_FAVICON" == false ]] && score=$((score-5)) || true
 
   DIS_PRINT_CSS=false;  grep -qi 'media="print"' <<< "$html"                     && DIS_PRINT_CSS=true  || true
@@ -1398,7 +1398,7 @@ analyze_ux() {
   UX_500=$(http_status "${URL%/}/error-500-audit-xyz")
   UX_BREADCRUMBS=false; grep -qi 'breadcrumb\|aria-label.*breadcrumb' <<< "$html" && UX_BREADCRUMBS=true || true
   UX_SOCIAL=false;      grep -qiE 'twitter\.com|x\.com/[a-zA-Z]|linkedin\.com|instagram\.com|facebook\.com' <<< "$html" && UX_SOCIAL=true || true
-  UX_CHAT=false;        grep -qi 'intercom\|drift\|zendesk\|crisp\|tidio\|freshchat' <<< "$html" && UX_CHAT=true || true
+  UX_CHAT=false;        grep -qiE 'intercom|drift|zendesk|crisp|tidio|freshchat|hubspot.*chat|gorgias|helpscout|liveblocks|tawk\.to|chaport|olark' <<< "$html" && UX_CHAT=true || true
   UX_FORM_VALIDATION=false; grep -qi 'required\|pattern=\|minlength=' <<< "$html" && UX_FORM_VALIDATION=true || true
   UX_LANG_SWITCH=false; grep -qi 'lang-switch\|language-selector\|idioma\|hreflang' <<< "$html" && UX_LANG_SWITCH=true || true
   UX_VIDEO=false;      grep -qiE '<video|youtube\.com/embed|vimeo\.com' <<< "$html" && UX_VIDEO=true      || true

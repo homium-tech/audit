@@ -6,6 +6,16 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
 ---
 
+## [1.7.2] — junio 2026
+
+### Corregido
+- **WebP subestimado** — el patrón solo detectaba `.webp"` literal. Ahora incluye `srcset="...webp"` y `type="image/webp"` — cubre la mayoría de sitios modernos que usan `<picture><source srcset>`.
+- **Dark mode falso negativo** — `prefers-color-scheme` solo cubre CSS nativo. Agregado `data-theme=` y `class="*dark*"` para detectar la convención de Tailwind, shadcn/ui y la mayoría de sistemas de diseño desde 2022.
+- **Scripts inline subcontados** — `<script>` exacto no detectaba `<script type="module">`, `<script defer>` ni `<script async>`. Ahora el patrón cubre todas las variantes inline sin `src=`.
+- **Chat widget lista desactualizada** — agregados Gorgias, Help Scout, Liveblocks, tawk.to, Chaport, Olark y HubSpot chat a la detección de widgets.
+
+---
+
 ## [1.7.1] — junio 2026
 
 ### Corregido
