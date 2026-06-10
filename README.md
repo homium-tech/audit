@@ -28,6 +28,39 @@ Genera un reporte **JSON estructurado** junto al `.md` en cada auditoría — ba
 
 ---
 
+## 🤖 Dimensión GEO — Generative Engine Optimization
+
+Evalúa qué tan bien posicionado está el sitio para ser **citado por motores de IA generativa**: ChatGPT, Gemini, Claude y Perplexity. Cada motor recibe su propio score independiente (0-100).
+
+> GEO y SEO miden cosas distintas. El SEO mide si Google te *indexa*. El GEO mide si una IA te *cita* cuando alguien hace una pregunta relevante a tu negocio. Un sitio puede tener SEO 90 y GEO 30.
+
+### Score por motor
+
+| Motor | Señales prioritarias |
+|-------|---------------------|
+| ChatGPT | GPTBot permitido en robots.txt · FAQPage schema · llms.txt |
+| Gemini | Googlebot permitido · FAQPage + Speakable schema · E-E-A-T completo |
+| Claude | ClaudeBot/anthropic-ai permitido · llms.txt · referencias autoritativas |
+| Perplexity | PerplexityBot permitido · fecha visible · contenido estructurado |
+
+### Señales analizadas
+
+- **Acceso de AI crawlers** — verifica si GPTBot, ClaudeBot, PerplexityBot y Googlebot están permitidos en `robots.txt`. Un bot bloqueado = invisible para ese motor.
+- **llms.txt** — archivo que indica a los modelos de IA qué contenido priorizar (equivalente moderno del sitemap para IA).
+- **Schema para IA** — FAQPage, HowTo, Speakable, Article, Product, Review, Organization.
+- **E-E-A-T** — páginas "Quiénes somos" y "Contacto" como URLs separadas o secciones in-page. Autor visible, fecha de publicación visible.
+- **Confianza del schema** — detecta si el nombre de la empresa es genérico ("Home") o si `sameAs` está vacío.
+- **Contenido estructurado** — ratio de listas y tablas vs. prosa. Las IA prefieren contenido con más del 40% estructurado.
+- **Referencias autoritativas** — links a .gov, .edu, Wikipedia, PubMed y fuentes reconocidas.
+
+### Tipo de sitio — auto-detectado
+
+Detectado desde el HTML: `ecommerce` / `blog` / `saas` / `onepager` / `institucional`. Los pesos del score varían según el tipo: e-commerce penaliza Product schema ausente, blogs penalizan Article sin autor, landing pages penalizan FAQPage ausente.
+
+GEO pesa **8%** en el score global.
+
+---
+
 ## 🚀 Instalación
 
 ```bash
