@@ -55,7 +55,7 @@ HTMLHINT_CMD=$(resolve_cmd "htmlhint" "htmlhint")
 SSLCHECK_CMD=$(resolve_cmd "ssl-checker" "ssl-checker")
 
 # ─── Usage ───────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="1.8.1"
+SCRIPT_VERSION="1.10.0"
 
 usage() {
   echo -e "${BOLD}homium-audit${RESET} v${SCRIPT_VERSION} — Auditoría profesional de sitios web"
@@ -1371,6 +1371,46 @@ analyze_geo() {
     grep -qi '"acceptedAnswer"' <<< "$html" && GEO_SCHEMA_FAQ_COMPLETE=true || true
   fi
 
+  # M7: noai/noimageai — declaración explícita de no querer ser citado por IA
+  GEO_META_NOAI=false
+  echo "$html" | grep -oiE '<meta[^>]*name="robots"[^>]*content="[^"]*"' \
+    | grep -qiE 'noai|noimageai' && GEO_META_NOAI=true || true
+
+  # M8: Citation patterns — contenido con atribución (señal de credibilidad para IA)
+  GEO_CITATION_PATTERNS=$(echo "$html" | sed 's/<[^>]*>//g' \
+    | grep -oiE 'según |de acuerdo (a|con)|fuente:|publicado por|basado en|according to|published by|source:|per ' \
+    | wc -l | tr -d ' ')
+  GEO_CITATION_PATTERNS=${GEO_CITATION_PATTERNS:-0}
+
+  # M9: llms.txt quality — calidad del contenido, no solo existencia
+  GEO_LLMS_TXT_QUALITY="ausente"
+  if [[ "$GEO_LLMS_TXT" == "true" ]]; then
+    local _llms_content
+    _llms_content=$(curl -sSL --max-time 5 "${base}/llms.txt" 2>/dev/null || echo "")
+    if [[ -n "$_llms_content" ]]; then
+      local _has_name _has_desc _has_links
+      echo "$_llms_content" | grep -q '^#'  && _has_name=1  || _has_name=0
+      echo "$_llms_content" | grep -q '^>'  && _has_desc=1  || _has_desc=0
+      echo "$_llms_content" | grep -q '^- \[' && _has_links=1 || _has_links=0
+      if (( _has_name + _has_desc + _has_links == 3 )); then GEO_LLMS_TXT_QUALITY="completo"
+      elif (( _has_name + _has_desc + _has_links >= 1 )); then GEO_LLMS_TXT_QUALITY="parcial"
+      else GEO_LLMS_TXT_QUALITY="vacio"
+      fi
+    else
+      GEO_LLMS_TXT_QUALITY="vacio"
+    fi
+  fi
+
+  # M10: Definition sentences — frases definitionales ("X es Y")
+  GEO_DEFINITION_PATTERNS=$(echo "$html" | sed 's/<[^>]*>//g' \
+    | grep -oiE '[A-ZÁÉÍÓÚ][a-záéíóúñA-ZÁÉÍÓÚÑ ]{3,40} (es |son |se define|se refiere|refers to|is a |are )' \
+    | wc -l | tr -d ' ')
+  GEO_DEFINITION_PATTERNS=${GEO_DEFINITION_PATTERNS:-0}
+
+  # M11: ai-plugin.json — manifest para GPT Actions / ChatGPT plugins
+  GEO_AI_PLUGIN=false
+  [[ "$(http_status_noredirect "${base}/.well-known/ai-plugin.json")" == "200" ]] && GEO_AI_PLUGIN=true || true
+
   # ── Score calculation ──────────────────────────────────────────────────────
   # Access signals (max -33)
   [[ "$GEO_BOT_CHATGPT" == false ]]    && score=$((score - 12))
@@ -1426,7 +1466,17 @@ analyze_geo() {
   [[ "$GEO_SCHEMA_FAQ" == true && "$GEO_SCHEMA_FAQ_COMPLETE" == false ]]         && score=$((score - 2))
   # A5: Copilot
   [[ "$GEO_BOT_COPILOT" == false ]] && score=$((score - 3))
+  # M7: noai — penalización si el sitio declara explícitamente no querer ser citado
+  [[ "$GEO_META_NOAI" == true ]] && score=$((score - 15))
+  # M8: citation patterns — señal positiva
+  (( GEO_CITATION_PATTERNS >= 3 )) && score=$((score + 3))
+  # M11: ai-plugin.json — señal positiva
+  [[ "$GEO_AI_PLUGIN" == true ]] && score=$((score + 5))
+  # llms.txt quality diferenciada
+  [[ "$GEO_LLMS_TXT_QUALITY" == "vacio" ]]   && score=$((score - 3))
+  [[ "$GEO_LLMS_TXT_QUALITY" == "parcial" ]]  && score=$((score - 1))
   (( score < 0 )) && score=0
+  (( score > 100 )) && score=100
 
   set_score "geo" "$score"; SCORE_GEO=$score
 
@@ -1437,7 +1487,9 @@ analyze_geo() {
   [[ "$GEO_LLMS_TXT" == false ]]    && _cg=$((_cg - 10))
   [[ "$GEO_PAGE_ABOUT" == false ]]  && _cg=$((_cg - 10))
   [[ "$GEO_PAGE_CONTACT" == false ]] && _cg=$((_cg - 10))
-  (( _cg < 0 )) && _cg=0; GEO_ENGINE_CHATGPT=$_cg
+  [[ "$GEO_AI_PLUGIN" == true ]]     && _cg=$((_cg + 10))
+  [[ "$GEO_META_NOAI" == true ]]     && _cg=$((_cg - 30))
+  (( _cg < 0 )) && _cg=0; (( _cg > 100 )) && _cg=100; GEO_ENGINE_CHATGPT=$_cg
 
   local _gm=100
   [[ "$GEO_BOT_GEMINI" == false ]]       && _gm=$((_gm - 35))
@@ -1450,13 +1502,16 @@ analyze_geo() {
   (( _gm < 0 )) && _gm=0; GEO_ENGINE_GEMINI=$_gm
 
   local _cl=100
-  [[ "$GEO_BOT_CLAUDE" == false ]]     && _cl=$((_cl - 35))
-  [[ "$GEO_LLMS_TXT" == false ]]       && _cl=$((_cl - 20))
-  [[ "$GEO_PAGE_ABOUT" == false ]]     && _cl=$((_cl - 18))
-  [[ "$GEO_PAGE_CONTACT" == false ]]   && _cl=$((_cl - 10))
-  (( GEO_AUTH_LINKS == 0 ))            && _cl=$((_cl - 10))
-  [[ "$GEO_AUTHOR_VISIBLE" == false ]] && _cl=$((_cl - 7))
-  (( _cl < 0 )) && _cl=0; GEO_ENGINE_CLAUDE=$_cl
+  [[ "$GEO_BOT_CLAUDE" == false ]]         && _cl=$((_cl - 35))
+  [[ "$GEO_LLMS_TXT" == false ]]           && _cl=$((_cl - 20))
+  [[ "$GEO_PAGE_ABOUT" == false ]]         && _cl=$((_cl - 18))
+  [[ "$GEO_PAGE_CONTACT" == false ]]       && _cl=$((_cl - 10))
+  (( GEO_AUTH_LINKS == 0 ))                && _cl=$((_cl - 10))
+  [[ "$GEO_AUTHOR_VISIBLE" == false ]]     && _cl=$((_cl - 7))
+  (( GEO_CITATION_PATTERNS >= 3 ))         && _cl=$((_cl + 5))
+  [[ "$GEO_LLMS_TXT_QUALITY" == "completo" ]] && _cl=$((_cl + 5))
+  [[ "$GEO_META_NOAI" == true ]]           && _cl=$((_cl - 20))
+  (( _cl < 0 )) && _cl=0; (( _cl > 100 )) && _cl=100; GEO_ENGINE_CLAUDE=$_cl
 
   local _px=100
   [[ "$GEO_BOT_PERPLEXITY" == false ]] && _px=$((_px - 35))
@@ -1466,7 +1521,10 @@ analyze_geo() {
   (( GEO_AUTH_LINKS == 0 ))            && _px=$((_px - 15))
   [[ "$GEO_SCHEMA_FAQ" == false ]]     && _px=$((_px - 12))
   (( GEO_QUESTION_HEADINGS == 0 ))     && _px=$((_px - 5))
-  (( _px < 0 )) && _px=0; GEO_ENGINE_PERPLEXITY=$_px
+  (( GEO_CITATION_PATTERNS >= 3 ))     && _px=$((_px + 5))
+  (( GEO_DEFINITION_PATTERNS > 0 ))    && _px=$((_px + 3))
+  [[ "$GEO_META_NOAI" == true ]]       && _px=$((_px - 20))
+  (( _px < 0 )) && _px=0; (( _px > 100 )) && _px=100; GEO_ENGINE_PERPLEXITY=$_px
 
   # A5: Copilot engine score
   local _cp=100
@@ -3392,8 +3450,11 @@ generate_json() {
       "gemini":     $(_jb "${GEO_BOT_GEMINI:-false}"),
       "claude":     $(_jb "${GEO_BOT_CLAUDE:-false}"),
       "perplexity": $(_jb "${GEO_BOT_PERPLEXITY:-false}"),
-      "copilot":    $(_jb "${GEO_BOT_COPILOT:-false}"),
-      "llms_txt":   $(_jb "${GEO_LLMS_TXT:-false}")
+      "copilot":        $(_jb "${GEO_BOT_COPILOT:-false}"),
+      "llms_txt":       $(_jb "${GEO_LLMS_TXT:-false}"),
+      "llms_txt_quality": "$(_je "${GEO_LLMS_TXT_QUALITY:-ausente}")",
+      "meta_noai":      $(_jb "${GEO_META_NOAI:-false}"),
+      "ai_plugin":      $(_jb "${GEO_AI_PLUGIN:-false}")
     },
     "confianza": {
       "pagina_empresa":         $(_jb "${GEO_PAGE_ABOUT:-false}"),
@@ -3416,6 +3477,8 @@ generate_json() {
       "productos_marcados":       $(_jb "${GEO_SCHEMA_PRODUCT:-false}"),
       "resenas_estructuradas":    $(_jb "${GEO_SCHEMA_REVIEW:-false}"),
       "question_headings":        ${GEO_QUESTION_HEADINGS:-0},
+      "citation_patterns":        ${GEO_CITATION_PATTERNS:-0},
+      "definition_patterns":      ${GEO_DEFINITION_PATTERNS:-0},
       "contenido_estructurado_pct": ${GEO_STRUCTURED_PCT:-0},
       "listas_detectadas":        ${GEO_LI_COUNT:-0},
       "tablas_detectadas":        ${GEO_TABLE_COUNT:-0},

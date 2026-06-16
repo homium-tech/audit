@@ -6,6 +6,25 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
 ---
 
+## [1.10.0] — junio 2026
+
+### Agregado — GEO v2 completo
+
+- **noai/noimageai detection** — detecta `<meta name="robots" content="noai">`. Si presente, penaliza −15pts GEO global y −20-30pts por motor. Es una declaración explícita del sitio de no querer ser citado por IA.
+- **Citation patterns** — cuenta frases con atribución ("según", "fuente:", "de acuerdo a", "according to"). ≥3 patrones suma +3pts GEO y +5pts en scores de Claude y Perplexity.
+- **llms.txt quality** — descarga el contenido y verifica estructura: `#` (nombre), `>` (descripción), `- [` (páginas). Valores: `completo` / `parcial` / `vacío`. Score diferenciado vs boolean anterior.
+- **Definition sentences** — cuenta frases definitionales ("X es Y", "se define como", "refers to"). Señal positiva en Perplexity (+3pts).
+- **ai-plugin.json** — HEAD a `/.well-known/ai-plugin.json`. Si presente: +5pts GEO global y +10pts ChatGPT.
+
+### JSON — campos nuevos
+- `geo.acceso.llms_txt_quality` — `"completo"` | `"parcial"` | `"vacio"` | `"ausente"`
+- `geo.acceso.meta_noai` — boolean
+- `geo.acceso.ai_plugin` — boolean
+- `geo.contenido.citation_patterns` — int
+- `geo.contenido.definition_patterns` — int
+
+---
+
 ## [1.8.1] — junio 2026
 
 ### Corregido — bugs detectados en auditoría real (aluzian.com)
