@@ -6,6 +6,17 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
 ---
 
+## [1.8.1] — junio 2026
+
+### Corregido — bugs detectados en auditoría real (aluzian.com)
+
+- **Conclusión: seguridad hardcodeada** — el texto de brechas ahora construye la lista de headers ausentes dinámicamente. Ya no menciona X-Frame-Options como faltante si está presente, ni "Sin redirección HTTP→HTTPS" si el redirect está activo.
+- **Conclusión: GEO mencionaba /llms.txt aunque estuviera presente** — la razón del gap GEO ahora es dinámica: solo lista los elementos realmente ausentes (FAQPage schema, /llms.txt, página de empresa).
+- **Conclusión: email decía "Sin DMARC y DKIM" aunque DKIM estuviera presente** — ahora enumera solo los registros realmente ausentes.
+- **Matriz de Priorización truncada** — antes solo cubría 11 checks básicos de SEO/Seguridad/Legal. Ahora incluye GEO (FAQPage, llms.txt, Organization schema, About/Contact), Ciberseguridad (DMARC policy, SPF policy, DKIM), Performance (CDN) y Accesibilidad (ARIA, alt text) — alineada con la Hoja de Ruta.
+
+---
+
 ## [1.8.0] — junio 2026
 
 ### Corregido — falsos positivos activos

@@ -55,7 +55,7 @@ HTMLHINT_CMD=$(resolve_cmd "htmlhint" "htmlhint")
 SSLCHECK_CMD=$(resolve_cmd "ssl-checker" "ssl-checker")
 
 # ─── Usage ───────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="1.8.0"
+SCRIPT_VERSION="1.8.1"
 
 usage() {
   echo -e "${BOLD}homium-audit${RESET} v${SCRIPT_VERSION} — Auditoría profesional de sitios web"
@@ -2490,17 +2490,39 @@ fi
 |:---------:|--------|:-------:|:--------:|-----------|
 $(
   _p=0
-  [ "$SEC_HSTS"            != "true"   ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Implementar HSTS | 4 | 1 | Seguridad |"; }
-  [ "$SEC_CSP"             != "true"   ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Configurar CSP | 4 | 2 | Seguridad |"; }
-  [ "$SEO_TITLE"          == "AUSENTE" ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Añadir title tag | 4 | 1 | SEO |"; }
-  [ "$SEC_HTTPS_REDIRECT"  != "true"   ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Forzar HTTPS redirect | 4 | 1 | Seguridad |"; }
-  [ "$SEO_META_DESC"      == "AUSENTE" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Meta descriptions | 3 | 1 | SEO |"; }
-  [ "$LEGAL_COOKIES"       != "true"   ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Banner cookies GDPR | 3 | 2 | Legal |"; }
-  [ "$ACC_ARIA"            != "true"   ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | ARIA labels | 3 | 2 | Accesibilidad |"; }
-  [ "$LEGAL_PRIVACY"       != "true"   ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Política de privacidad | 3 | 1 | Legal |"; }
-  [ "$SEO_SITEMAP"         != "200"    ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | Generar sitemap.xml | 2 | 1 | SEO |"; }
-  [ "$SEO_SCHEMA"          != "true"   ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | Schema.org | 2 | 2 | SEO |"; }
-  [ "$DIS_FAVICON"         != "true"   ] && { _p=$((_p+1)); echo "| 🟢 ${_p} | Favicon | 1 | 1 | Diseño |"; }
+  # Seguridad crítica
+  [ "${SEC_HSTS:-false}"           != "true"   ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Implementar HSTS | 4 | 1 | Seguridad |"; }
+  [ "${SEC_HTTPS_REDIRECT:-false}" != "true"   ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Forzar HTTPS redirect | 4 | 1 | Seguridad |"; }
+  [ "${SEC_CSP:-false}"            != "true"   ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Configurar CSP | 4 | 2 | Seguridad |"; }
+  # SEO crítico
+  [ "${SEO_TITLE:-}"              == "AUSENTE" ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Añadir title tag | 4 | 1 | SEO |"; }
+  [ "${SEO_META_DESC:-}"          == "AUSENTE" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Meta descriptions | 3 | 1 | SEO |"; }
+  # Ciberseguridad
+  [ "${CYBER_DMARC_POLICY:-ausente}" == "ausente" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Configurar DMARC en DNS | 4 | 1 | Ciberseguridad |"; }
+  [ "${CYBER_DMARC_POLICY:-ausente}" == "none"    ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | DMARC: cambiar p=none a p=quarantine | 3 | 1 | Ciberseguridad |"; }
+  [ "${CYBER_SPF_POLICY:-ausente}"   == "ausente" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Configurar SPF en DNS | 3 | 1 | Ciberseguridad |"; }
+  [ "${CYBER_SPF_POLICY:-ausente}"   == "permissive" ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Corregir SPF +all (dominio suplantable) | 4 | 1 | Ciberseguridad |"; }
+  [ "${CYBER_DKIM:-AUSENTE}"        == "AUSENTE" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Configurar DKIM | 3 | 2 | Ciberseguridad |"; }
+  # GEO
+  [ "${GEO_SCHEMA_FAQ:-false}"   != "true" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Implementar FAQPage schema | 4 | 2 | GEO |"; }
+  [ "${GEO_LLMS_TXT:-false}"     != "true" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Crear /llms.txt | 3 | 1 | GEO |"; }
+  [ "${GEO_PAGE_ABOUT:-false}"   != "true" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Crear página Quiénes somos | 3 | 2 | GEO |"; }
+  [ "${GEO_PAGE_CONTACT:-false}" != "true" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Crear página de contacto | 3 | 1 | GEO |"; }
+  [ "${GEO_SCHEMA_ORG_NAME_OK:-false}" == "false" ] && [ "${GEO_SCHEMA_ORG:-false}" == "true" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Corregir nombre empresa en Organization schema | 4 | 1 | GEO |"; }
+  # Legal
+  [ "${LEGAL_PRIVACY:-false}"    != "true" ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Publicar política de privacidad | 4 | 2 | Legal |"; }
+  [ "${LEGAL_COOKIES:-false}"    != "true" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Banner cookies GDPR | 3 | 2 | Legal |"; }
+  # Accesibilidad
+  [ "${ACC_ARIA:-false}"         != "true" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | ARIA labels en componentes interactivos | 3 | 2 | Accesibilidad |"; }
+  (( ${ACC_IMGS_NO_ALT:-0} > 0 ))           && { _p=$((_p+1)); echo "| 🟠 ${_p} | Alt text en ${ACC_IMGS_NO_ALT} imagen(es) | 3 | 2 | Accesibilidad |"; }
+  # Performance
+  [ "${PERF_CDN:-No detectado}"  == "No detectado" ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | Implementar CDN | 3 | 2 | Performance |"; }
+  # SEO / Técnico
+  [ "${SEO_SITEMAP:-}"           != "200"  ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | Generar sitemap.xml | 2 | 1 | SEO |"; }
+  [ "${SEO_SCHEMA:-false}"       != "true" ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | Schema.org | 2 | 2 | SEO |"; }
+  [ "${DIS_FAVICON:-false}"      != "true" ] && { _p=$((_p+1)); echo "| 🟢 ${_p} | Favicon | 1 | 1 | Diseño |"; }
+  [ "${SEC_XCTO:-false}"         != "true" ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | X-Content-Type-Options: nosniff | 2 | 1 | Seguridad |"; }
+  [ "${SEC_XFO:-false}"          != "true" ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | X-Frame-Options: DENY | 2 | 1 | Seguridad |"; }
 )
 
 ---
@@ -2643,14 +2665,38 @@ echo ""
 # Brechas críticas
 echo "### 🔴 Brechas que requieren acción inmediata"
 echo ""
-if [ "${SEC_HSTS:-false}" != "true" ] || [ "${SEC_HTTPS_REDIRECT:-false}" != "true" ]; then
-  echo "- **Seguridad (${SCORE_SEGURIDAD}/100) — nivel crítico.** Faltan headers fundamentales: HSTS, X-Content-Type-Options, X-Frame-Options. Sin redirección HTTP→HTTPS. Un atacante puede interceptar la conexión inicial de cualquier visitante. Corrección estimada: menos de 2 horas en el servidor."
+# B-R1/R2: construir lista dinámica de headers ausentes y problemas reales
+local _sec_missing="" _sec_n=0
+[ "${SEC_HSTS:-false}"           != "true" ] && _sec_missing="${_sec_missing}HSTS, "            && _sec_n=$((_sec_n+1))
+[ "${SEC_HSTS_WEAK:-false}"      == "true" ] && _sec_missing="${_sec_missing}HSTS max-age insuficiente, " && _sec_n=$((_sec_n+1))
+[ "${SEC_XCTO:-false}"           != "true" ] && _sec_missing="${_sec_missing}X-Content-Type-Options, " && _sec_n=$((_sec_n+1))
+[ "${SEC_XFO:-false}"            != "true" ] && _sec_missing="${_sec_missing}X-Frame-Options, " && _sec_n=$((_sec_n+1))
+[ "${SEC_RP:-false}"             != "true" ] && _sec_missing="${_sec_missing}Referrer-Policy, " && _sec_n=$((_sec_n+1))
+[ "${SEC_PER:-false}"            != "true" ] && _sec_missing="${_sec_missing}Permissions-Policy, " && _sec_n=$((_sec_n+1))
+_sec_missing=$(echo "$_sec_missing" | sed 's/, $//')
+local _sec_redir=""
+[ "${SEC_HTTPS_REDIRECT:-false}" != "true" ] && _sec_redir=" Sin redirección HTTP→HTTPS."
+if (( _sec_n > 0 )) || [ -n "$_sec_redir" ]; then
+  echo "- **Seguridad (${SCORE_SEGURIDAD}/100) — nivel crítico.** Faltan ${_sec_n} headers: ${_sec_missing}.${_sec_redir} Un atacante puede explotar estas ausencias para interceptar o manipular conexiones. Corrección estimada: menos de 2 horas en el servidor."
 fi
-if [ "${GEO_SCHEMA_FAQ:-false}" != "true" ] || [ "${GEO_LLMS_TXT:-false}" != "true" ]; then
-  echo "- **Visibilidad en IA generativa (GEO ${SCORE_GEO}/100) — oportunidad sin aprovechar.** ChatGPT (${GEO_ENGINE_CHATGPT}/100), Gemini (${GEO_ENGINE_GEMINI}/100), Claude (${GEO_ENGINE_CLAUDE}/100) y Perplexity (${GEO_ENGINE_PERPLEXITY}/100) pueden acceder al sitio pero raramente lo van a citar en sus respuestas. La razón: no hay preguntas estructuradas (FAQPage schema) ni guía de prioridades (/llms.txt). Estos dos elementos son los de mayor impacto/esfuerzo en GEO."
+
+# B-R4: construir razón GEO dinámica según qué falta realmente
+local _geo_razones=""
+[ "${GEO_SCHEMA_FAQ:-false}" != "true" ] && _geo_razones="${_geo_razones}preguntas estructuradas (FAQPage schema), "
+[ "${GEO_LLMS_TXT:-false}"   != "true" ] && _geo_razones="${_geo_razones}guía de prioridades (/llms.txt), "
+[ "${GEO_PAGE_ABOUT:-false}" != "true" ] && _geo_razones="${_geo_razones}página de empresa, "
+_geo_razones=$(echo "$_geo_razones" | sed 's/, $//')
+if [ "${GEO_SCHEMA_FAQ:-false}" != "true" ] || [ "${GEO_LLMS_TXT:-false}" != "true" ] || (( SCORE_GEO < 65 )); then
+  echo "- **Visibilidad en IA generativa (GEO ${SCORE_GEO}/100) — oportunidad sin aprovechar.** ChatGPT (${GEO_ENGINE_CHATGPT}/100), Gemini (${GEO_ENGINE_GEMINI}/100), Claude (${GEO_ENGINE_CLAUDE}/100) y Perplexity (${GEO_ENGINE_PERPLEXITY}/100) pueden acceder al sitio pero raramente lo van a citar. ${_geo_razones:+La razón: falta ${_geo_razones}. }Estos elementos son los de mayor impacto/esfuerzo en GEO."
 fi
-if [ "$CYBER_DMARC" == "AUSENTE" ] || [ "$CYBER_DKIM" == "AUSENTE" ]; then
-  echo "- **Email deliverability comprometida.** Sin DMARC y DKIM, cualquier persona puede enviar emails haciéndose pasar por el dominio. Phishing, spam y daño reputacional son riesgos reales. Solución: configuración DNS de 1-2 horas."
+
+# B-R3: separar DMARC y DKIM — mencionar solo los que realmente faltan
+local _email_missing=""
+[ "$CYBER_DMARC" == "AUSENTE" ] && _email_missing="${_email_missing}DMARC, "
+[ "$CYBER_DKIM"  == "AUSENTE" ] && _email_missing="${_email_missing}DKIM, "
+_email_missing=$(echo "$_email_missing" | sed 's/, $//')
+if [ -n "$_email_missing" ]; then
+  echo "- **Email deliverability comprometida.** Sin ${_email_missing}, cualquier persona puede enviar emails haciéndose pasar por el dominio. Phishing, spam y daño reputacional son riesgos reales. Solución: configuración DNS de 1-2 horas."
 fi
 if [ "${LEGAL_COOKIES:-false}" != "true" ]; then
   echo "- **Riesgo legal GDPR activo.** Sin banner de consentimiento de cookies. El sitio usa trackers (${LEGAL_TRACKERS[*]:-detectados}) sin consentimiento explícito — infracción del Reglamento ePrivacy. Multas de hasta €20M o 4% de facturación anual."
