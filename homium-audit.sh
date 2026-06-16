@@ -946,19 +946,42 @@ analyze_seguridad() {
   # Cookies — U4: analizar por cookie; cookies de sesión tienen prioridad
   local cookie_hdr
   cookie_hdr=$(echo "$headers" | grep "set-cookie" || echo "")
-  SEC_COOKIE_SECURE=true; SEC_COOKIE_HTTPONLY=true
+  SEC_COOKIE_SECURE=true; SEC_COOKIE_HTTPONLY=true; SEC_COOKIE_SAMESITE="ausente"
   if echo "$cookie_hdr" | grep -qi "set-cookie"; then
-    # Buscar primero en cookies de sesión conocidas
     local _sess_cookies _all_cookies _target
     _sess_cookies=$(echo "$cookie_hdr" | grep -iE 'set-cookie:[[:space:]]*(PHPSESSID|session|auth|token|jwt|_session|connect\.sid|SESS|sid)[=;]')
     _all_cookies="$cookie_hdr"
-    # Usar cookies de sesión si existen, si no evaluar todas
     _target="${_sess_cookies:-$_all_cookies}"
     echo "$_target" | grep -qi "secure"   || SEC_COOKIE_SECURE=false
     echo "$_target" | grep -qi "httponly" || SEC_COOKIE_HTTPONLY=false
+    # A4: SameSite
+    local _ss; _ss=$(echo "$_target" | grep -oiE 'SameSite=(Strict|Lax|None)' | head -1 | cut -d= -f2 | tr '[:upper:]' '[:lower:]')
+    SEC_COOKIE_SAMESITE="${_ss:-ausente}"
   fi
   [[ "$SEC_COOKIE_SECURE"   == false ]] && score=$((score-10)) || true
   [[ "$SEC_COOKIE_HTTPONLY" == false ]] && score=$((score-10)) || true
+  [[ "$SEC_COOKIE_SAMESITE" == "ausente" || "$SEC_COOKIE_SAMESITE" == "none" ]] && score=$((score-5)) || true
+
+  # A1: CSP calidad — wildcard o nonce+unsafe-inline anulan la política
+  SEC_CSP_WILDCARD=false; SEC_CSP_NONCE_BYPASS=false
+  if [[ "$SEC_CSP" == "true" ]]; then
+    local _csp_val
+    _csp_val=$(echo "$headers" | grep -i "content-security-policy" | head -1)
+    echo "$_csp_val" | grep -qE "default-src[[:space:]]+'\*'|default-src[[:space:]]+\*|script-src[[:space:]]+'\*'|script-src[[:space:]]+\*" && SEC_CSP_WILDCARD=true || true
+    echo "$_csp_val" | grep -qi "unsafe-inline" && echo "$_csp_val" | grep -qi "nonce-" && SEC_CSP_NONCE_BYPASS=true || true
+    [[ "$SEC_CSP_WILDCARD"    == true ]] && score=$((score-10)) || true
+    [[ "$SEC_CSP_NONCE_BYPASS" == true ]] && score=$((score-5))  || true
+  fi
+
+  # A3: TLS 1.0/1.1 activo — deprecados RFC 8996
+  SEC_TLS_OLD=false
+  if command -v openssl &>/dev/null; then
+    if echo "" | openssl s_client -tls1 -connect "${domain}:443" -timeout 3 2>/dev/null | grep -qi "Cipher\|established"; then
+      SEC_TLS_OLD=true; score=$((score-20))
+    elif echo "" | openssl s_client -tls1_1 -connect "${domain}:443" -timeout 3 2>/dev/null | grep -qi "Cipher\|established"; then
+      SEC_TLS_OLD=true; score=$((score-10))
+    fi
+  fi
 
   (( score < 0 )) && score=0; (( score > 100 )) && score=100
   set_score "seguridad" "$score"; SCORE_SEGURIDAD=$score
@@ -1093,6 +1116,34 @@ analyze_ciberseguridad() {
     local st; st=$(http_status_noredirect "${URL%/}${d}")
     [[ "$st" == "200" ]] && CYBER_EXPOSED_DIRS+=("$d") && score=$((score-10)) || true
   done
+
+  # N1: CORS mal configurado — wildcard + credentials = crítico
+  CYBER_CORS_UNSAFE=false
+  local _cors_origin _cors_creds
+  _cors_origin=$(fetch_headers "$URL" | grep -i "access-control-allow-origin" | head -1 || echo "")
+  _cors_creds=$(fetch_headers  "$URL" | grep -i "access-control-allow-credentials" | head -1 || echo "")
+  if echo "$_cors_origin" | grep -qE '\*' && echo "$_cors_creds" | grep -qi "true"; then
+    CYBER_CORS_UNSAFE=true
+    score=$((score-20))
+  fi
+
+  # N2: API keys en bundle JS principal
+  CYBER_API_KEYS_EXPOSED=()
+  local _js_url
+  _js_url=$(echo "$HTML_CACHE" | grep -oiE 'src="[^"]*\.js[^"]*"' \
+    | grep -viE 'analytics|gtag|facebook|twitter|recaptcha|maps\.google' \
+    | head -1 | cut -d'"' -f2 || echo "")
+  if [[ -n "$_js_url" ]]; then
+    [[ "$_js_url" != http* ]] && _js_url="${URL%/}/${_js_url#/}"
+    local _bundle
+    _bundle=$(curl -sSL --max-time 12 "$_js_url" 2>/dev/null | head -c 80000 || echo "")
+    echo "$_bundle" | grep -qE 'sk_live_[a-zA-Z0-9]{24}'             && CYBER_API_KEYS_EXPOSED+=("Stripe live key")         || true
+    echo "$_bundle" | grep -qE '"sk-[a-zA-Z0-9]{48}"'                && CYBER_API_KEYS_EXPOSED+=("OpenAI API key")           || true
+    echo "$_bundle" | grep -qE 'eyJ[a-zA-Z0-9_-]{20,}\.eyJ[a-zA-Z0-9_-]{20,}\.' && CYBER_API_KEYS_EXPOSED+=("JWT hardcodeado") || true
+    echo "$_bundle" | grep -qiE 'supabase' && echo "$_bundle" | grep -qE 'eyJ[a-zA-Z0-9_-]{50,}' && CYBER_API_KEYS_EXPOSED+=("Supabase anon key") || true
+    echo "$_bundle" | grep -qE 'VITE_[A-Z_]+=|REACT_APP_[A-Z_]+='   && CYBER_API_KEYS_EXPOSED+=("Variables de entorno filtradas al bundle") || true
+  fi
+  (( ${#CYBER_API_KEYS_EXPOSED[@]} > 0 )) && score=$((score - ${#CYBER_API_KEYS_EXPOSED[@]} * 20)) || true
 
   (( score < 0 )) && score=0; (( score > 100 )) && score=100
   set_score "ciberseguridad" "$score"; SCORE_CIBERSEGURIDAD=$score
@@ -1287,6 +1338,39 @@ analyze_geo() {
   GEO_AUTH_LINKS_PCT=0
   (( ${GEO_EXT_LINKS_TOTAL:-0} > 0 )) && GEO_AUTH_LINKS_PCT=$(( GEO_AUTH_LINKS * 100 / GEO_EXT_LINKS_TOTAL ))
 
+  # A5: Copilot/bingbot — 5° motor
+  GEO_BOT_COPILOT=true
+  if echo "$robots_content" | grep -A2 "User-agent: \*" | grep -qE 'Disallow:[[:space:]]*/[[:space:]]*$'; then
+    GEO_BOT_COPILOT=false
+  fi
+  if echo "$robots_content" | grep -qi "User-agent: bingbot"; then
+    echo "$robots_content" | grep -A5 -i "User-agent: bingbot" | grep -qE 'Disallow:[[:space:]]*/[[:space:]]*$' && GEO_BOT_COPILOT=false || GEO_BOT_COPILOT=true
+  fi
+
+  # A6: Question headings — H2/H3 con formato de pregunta
+  GEO_QUESTION_HEADINGS=$(echo "$html" | grep -oiE '<h[23][^>]*>[^<]*(¿|Qué |Cómo |Por qué|Cuál |Cuándo |What |How |Why )[^<]*</h[23]>' | wc -l | tr -d ' ')
+  GEO_QUESTION_HEADINGS=${GEO_QUESTION_HEADINGS:-0}
+
+  # A7: dateModified — frescura real del contenido
+  GEO_DATE_MODIFIED=false
+  grep -qiE '"dateModified"[[:space:]]*:|itemprop="dateModified"' <<< "$html" && GEO_DATE_MODIFIED=true || true
+  [[ "$GEO_DATE_MODIFIED" == false && -n "${SEO_LAST_MODIFIED:-}" ]] && GEO_DATE_MODIFIED=true || true
+
+  # A8: JSON-LD completeness — schema presente pero con campos vacíos
+  GEO_SCHEMA_ORG_COMPLETE=false; GEO_SCHEMA_ARTICLE_COMPLETE=false; GEO_SCHEMA_FAQ_COMPLETE=false
+  if [[ "$GEO_SCHEMA_ORG" == true ]]; then
+    grep -qiE '"url"[[:space:]]*:[[:space:]]*"https?' <<< "$html" && \
+    grep -qiE '"logo"[[:space:]]*:' <<< "$html" && GEO_SCHEMA_ORG_COMPLETE=true || true
+  fi
+  if [[ "$GEO_SCHEMA_ARTICLE" == true ]]; then
+    grep -qiE '"headline"[[:space:]]*:[[:space:]]*"[^"]' <<< "$html" && \
+    grep -qiE '"author"[[:space:]]*:' <<< "$html" && GEO_SCHEMA_ARTICLE_COMPLETE=true || true
+  fi
+  if [[ "$GEO_SCHEMA_FAQ" == true ]]; then
+    grep -qi '"Question"' <<< "$html" && \
+    grep -qi '"acceptedAnswer"' <<< "$html" && GEO_SCHEMA_FAQ_COMPLETE=true || true
+  fi
+
   # ── Score calculation ──────────────────────────────────────────────────────
   # Access signals (max -33)
   [[ "$GEO_BOT_CHATGPT" == false ]]    && score=$((score - 12))
@@ -1330,8 +1414,18 @@ analyze_geo() {
       [[ "$GEO_SCHEMA_SPEAKABLE" == false ]] && score=$((score - 5))
       ;;
   esac
-  (( GEO_STRUCTURED_PCT < 30 )) && score=$((score - 3))
-  (( GEO_AUTH_LINKS == 0 ))     && score=$((score - 3))
+  (( GEO_STRUCTURED_PCT < 30 ))  && score=$((score - 3))
+  (( GEO_AUTH_LINKS == 0 ))      && score=$((score - 3))
+  # A6: question headings
+  (( GEO_QUESTION_HEADINGS == 0 )) && score=$((score - 3))
+  # A7: dateModified
+  [[ "$GEO_DATE_MODIFIED" == false ]] && score=$((score - 3))
+  # A8: schema incompleto penaliza menos que ausente
+  [[ "$GEO_SCHEMA_ORG" == true && "$GEO_SCHEMA_ORG_COMPLETE" == false ]]         && score=$((score - 3))
+  [[ "$GEO_SCHEMA_ARTICLE" == true && "$GEO_SCHEMA_ARTICLE_COMPLETE" == false ]] && score=$((score - 2))
+  [[ "$GEO_SCHEMA_FAQ" == true && "$GEO_SCHEMA_FAQ_COMPLETE" == false ]]         && score=$((score - 2))
+  # A5: Copilot
+  [[ "$GEO_BOT_COPILOT" == false ]] && score=$((score - 3))
   (( score < 0 )) && score=0
 
   set_score "geo" "$score"; SCORE_GEO=$score
@@ -1366,11 +1460,22 @@ analyze_geo() {
 
   local _px=100
   [[ "$GEO_BOT_PERPLEXITY" == false ]] && _px=$((_px - 35))
-  [[ "$GEO_DATE_VISIBLE" == false ]]   && _px=$((_px - 20))
+  [[ "$GEO_DATE_VISIBLE" == false ]]   && _px=$((_px - 15))
+  [[ "$GEO_DATE_MODIFIED" == false ]]  && _px=$((_px - 10))
   (( GEO_STRUCTURED_PCT < 30 ))        && _px=$((_px - 18))
   (( GEO_AUTH_LINKS == 0 ))            && _px=$((_px - 15))
   [[ "$GEO_SCHEMA_FAQ" == false ]]     && _px=$((_px - 12))
+  (( GEO_QUESTION_HEADINGS == 0 ))     && _px=$((_px - 5))
   (( _px < 0 )) && _px=0; GEO_ENGINE_PERPLEXITY=$_px
+
+  # A5: Copilot engine score
+  local _cp=100
+  [[ "$GEO_BOT_COPILOT" == false ]]    && _cp=$((_cp - 40))
+  [[ "$GEO_SCHEMA_ORG" == false ]]     && _cp=$((_cp - 20))
+  [[ "$GEO_DATE_MODIFIED" == false ]]  && _cp=$((_cp - 20))
+  [[ "$GEO_SCHEMA_FAQ" == false ]]     && _cp=$((_cp - 15))
+  [[ "$GEO_PAGE_ABOUT" == false ]]     && _cp=$((_cp - 5))
+  (( _cp < 0 )) && _cp=0; GEO_ENGINE_COPILOT=$_cp
 
   ok "GEO analizado — Score: ${score}/100 · Tipo de sitio: ${GEO_SITE_TYPE}"
 }
@@ -3279,13 +3384,15 @@ generate_json() {
       "chatgpt":    { "score": ${GEO_ENGINE_CHATGPT:-0},    "estado": "$([ ${GEO_ENGINE_CHATGPT:-0} -ge 70 ] && echo 'bien' || ([ ${GEO_ENGINE_CHATGPT:-0} -ge 40 ] && echo 'parcial' || echo 'critico'))" },
       "gemini":     { "score": ${GEO_ENGINE_GEMINI:-0},     "estado": "$([ ${GEO_ENGINE_GEMINI:-0} -ge 70 ] && echo 'bien' || ([ ${GEO_ENGINE_GEMINI:-0} -ge 40 ] && echo 'parcial' || echo 'critico'))" },
       "claude":     { "score": ${GEO_ENGINE_CLAUDE:-0},     "estado": "$([ ${GEO_ENGINE_CLAUDE:-0} -ge 70 ] && echo 'bien' || ([ ${GEO_ENGINE_CLAUDE:-0} -ge 40 ] && echo 'parcial' || echo 'critico'))" },
-      "perplexity": { "score": ${GEO_ENGINE_PERPLEXITY:-0}, "estado": "$([ ${GEO_ENGINE_PERPLEXITY:-0} -ge 70 ] && echo 'bien' || ([ ${GEO_ENGINE_PERPLEXITY:-0} -ge 40 ] && echo 'parcial' || echo 'critico'))" }
+      "perplexity": { "score": ${GEO_ENGINE_PERPLEXITY:-0}, "estado": "$([ ${GEO_ENGINE_PERPLEXITY:-0} -ge 70 ] && echo 'bien' || ([ ${GEO_ENGINE_PERPLEXITY:-0} -ge 40 ] && echo 'parcial' || echo 'critico'))" },
+      "copilot":    { "score": ${GEO_ENGINE_COPILOT:-0},    "estado": "$([ ${GEO_ENGINE_COPILOT:-0} -ge 70 ] && echo 'bien' || ([ ${GEO_ENGINE_COPILOT:-0} -ge 40 ] && echo 'parcial' || echo 'critico'))" }
     },
     "acceso": {
       "chatgpt":    $(_jb "${GEO_BOT_CHATGPT:-false}"),
       "gemini":     $(_jb "${GEO_BOT_GEMINI:-false}"),
       "claude":     $(_jb "${GEO_BOT_CLAUDE:-false}"),
       "perplexity": $(_jb "${GEO_BOT_PERPLEXITY:-false}"),
+      "copilot":    $(_jb "${GEO_BOT_COPILOT:-false}"),
       "llms_txt":   $(_jb "${GEO_LLMS_TXT:-false}")
     },
     "confianza": {
@@ -3293,9 +3400,13 @@ generate_json() {
       "pagina_contacto":        $(_jb "${GEO_PAGE_CONTACT:-false}"),
       "autor_visible":          $(_jb "${GEO_AUTHOR_VISIBLE:-false}"),
       "fecha_visible":          $(_jb "${GEO_DATE_VISIBLE:-false}"),
+      "fecha_modificacion":     $(_jb "${GEO_DATE_MODIFIED:-false}"),
       "nombre_empresa_correcto": $(_jb "${GEO_SCHEMA_ORG_NAME_OK:-false}"),
       "perfiles_sociales":      $(_jb "$([ "${GEO_SCHEMA_SAMAS_EMPTY:-true}" == "false" ] && echo true || echo false)"),
-      "redes_en_sitio":         $(_jb "${GEO_SOCIAL_LINKS:-false}")
+      "redes_en_sitio":         $(_jb "${GEO_SOCIAL_LINKS:-false}"),
+      "org_schema_complete":    $(_jb "${GEO_SCHEMA_ORG_COMPLETE:-false}"),
+      "article_schema_complete": $(_jb "${GEO_SCHEMA_ARTICLE_COMPLETE:-false}"),
+      "faq_schema_complete":    $(_jb "${GEO_SCHEMA_FAQ_COMPLETE:-false}")
     },
     "contenido": {
       "preguntas_estructuradas":  $(_jb "${GEO_SCHEMA_FAQ:-false}"),
@@ -3304,6 +3415,7 @@ generate_json() {
       "articulos_con_autor":      $(_jb "${GEO_SCHEMA_ARTICLE:-false}"),
       "productos_marcados":       $(_jb "${GEO_SCHEMA_PRODUCT:-false}"),
       "resenas_estructuradas":    $(_jb "${GEO_SCHEMA_REVIEW:-false}"),
+      "question_headings":        ${GEO_QUESTION_HEADINGS:-0},
       "contenido_estructurado_pct": ${GEO_STRUCTURED_PCT:-0},
       "listas_detectadas":        ${GEO_LI_COUNT:-0},
       "tablas_detectadas":        ${GEO_TABLE_COUNT:-0},
@@ -3326,17 +3438,19 @@ generate_json() {
     "headers": {
       "hsts": $(_jb "${SEC_HSTS:-false}"), "hsts_max_age": ${hsts_maxage},
       "csp": $(_jb "${SEC_CSP:-false}"), "csp_unsafe_inline": $(_jb "${SEC_CSP_UNSAFE:-false}"),
+      "csp_wildcard": $(_jb "${SEC_CSP_WILDCARD:-false}"), "csp_nonce_bypass": $(_jb "${SEC_CSP_NONCE_BYPASS:-false}"),
       "x_content_type_options": $(_jb "${SEC_XCTO:-false}"), "x_frame_options": $(_jb "${SEC_XFO:-false}"),
       "referrer_policy": $(_jb "${SEC_RP:-false}"), "permissions_policy": $(_jb "${SEC_PER:-false}"),
       "sri": $(_jb "${SEC_SRI:-false}")
     },
     "https_redirect": $(_jb "${SEC_HTTPS_REDIRECT:-false}"),
+    "tls_old_version": $(_jb "${SEC_TLS_OLD:-false}"),
     "ssl": {
       "days_remaining": ${ssl_days}, "expiry_note": "$(_je "${SEC_SSL_EXPIRY_NOTE:-}")",
       "issuer": "$(_je "${SSL_ISSUER:-Desconocido}")", "tls_version": "$(_je "${SSL_PROTOCOL:-Desconocido}")",
       "cipher": "$(_je "${SSL_CIPHER:-Desconocido}")", "san": ${json_san}
     },
-    "cookies": { "secure": $(_jb "${SEC_COOKIE_SECURE:-false}"), "httponly": $(_jb "${SEC_COOKIE_HTTPONLY:-false}") },
+    "cookies": { "secure": $(_jb "${SEC_COOKIE_SECURE:-false}"), "httponly": $(_jb "${SEC_COOKIE_HTTPONLY:-false}"), "samesite": "$(_je "${SEC_COOKIE_SAMESITE:-ausente}")" },
     "caa_record": "$(_je "${SEC_CAA:-AUSENTE}")", "mx_record": "$(_je "${SEC_MX:-AUSENTE}")"
   },
   "ciberseguridad": {
@@ -3349,6 +3463,8 @@ generate_json() {
     "source_maps_exposed": $(_jb "${CYBER_SOURCE_MAPS:-false}"),
     "graphql_exposed": $(_jb "${CYBER_GRAPHQL_EXPOSED:-false}"),
     "error_disclosure": $(_jb "${CYBER_ERROR_DISCLOSURE:-false}"),
+    "cors_unsafe": $(_jb "${CYBER_CORS_UNSAFE:-false}"),
+    "api_keys_exposed": $(_jarr "${CYBER_API_KEYS_EXPOSED[@]:-}"),
     "dev_tools_active": null
   },
   "calidad_tecnica": {
