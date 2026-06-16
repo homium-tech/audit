@@ -185,6 +185,13 @@ http_status() {
     -w "%{http_code}" "$1" 2>/dev/null || echo "000"
 }
 
+# Para paths sensibles: NO seguir redirects — 200 directo = expuesto, 301/302 = soft-404
+http_status_noredirect() {
+  curl -sSo /dev/null --max-time "${TIMEOUT:-10}" \
+    --user-agent "Mozilla/5.0 (compatible; homium-audit/1.1)" \
+    -w "%{http_code}" "$1" 2>/dev/null || echo "000"
+}
+
 response_time_ms() {
   curl -sSLo /dev/null --max-time "$TIMEOUT" \
     --user-agent "Mozilla/5.0 (compatible; homium-audit/1.1)" \
@@ -601,12 +608,14 @@ analyze_performance() {
   run_lighthouse
   PERF_LH_MOBILE=$(lh_score "performance" "mobile")
   PERF_LH_DESKTOP=$(lh_score "performance" "desktop")
+  # A9: LH mide realidad (60%), heurístico mide señales estáticas (40%)
   if [[ -n "$PERF_LH_MOBILE" && -n "$PERF_LH_DESKTOP" ]]; then
-    score=$(( (score + PERF_LH_MOBILE + PERF_LH_DESKTOP) / 3 ))
+    local _lh_avg=$(( (PERF_LH_MOBILE + PERF_LH_DESKTOP) / 2 ))
+    score=$(( (_lh_avg * 60 + score * 40) / 100 ))
   elif [[ -n "$PERF_LH_MOBILE" ]]; then
-    score=$(( (score + PERF_LH_MOBILE) / 2 ))
+    score=$(( (PERF_LH_MOBILE * 60 + score * 40) / 100 ))
   elif [[ -n "$PERF_LH_DESKTOP" ]]; then
-    score=$(( (score + PERF_LH_DESKTOP) / 2 ))
+    score=$(( (PERF_LH_DESKTOP * 60 + score * 40) / 100 ))
   fi
 
   (( score < 0 )) && score=0; (( score > 100 )) && score=100
@@ -864,10 +873,14 @@ analyze_seguridad() {
   SEC_RP=false;   echo "$headers" | grep -q "referrer-policy"           && SEC_RP=true   || true
   SEC_PER=false;  echo "$headers" | grep -q "permissions-policy"        && SEC_PER=true  || true
 
-  # HSTS max-age value
+  # HSTS max-age value + calidad
   SEC_HSTS_MAXAGE=$(echo "$headers" | grep "strict-transport-security" \
     | grep -oE 'max-age=[0-9]+' | grep -oE '[0-9]+' | head -1 || echo "0")
   SEC_HSTS_MAXAGE=${SEC_HSTS_MAXAGE:-0}
+  SEC_HSTS_WEAK=false
+  if [[ "$SEC_HSTS" == true ]] && (( SEC_HSTS_MAXAGE < 86400 )); then
+    SEC_HSTS_WEAK=true
+  fi
 
   # CSP quality — detectar directivas inseguras
   SEC_CSP_UNSAFE=false
@@ -896,6 +909,7 @@ analyze_seguridad() {
   [[ -n "$mx_raw"  ]] && SEC_MX="$mx_raw"   || true
 
   [[ "$SEC_HSTS" == false ]] && score=$((score-20)) || true
+  [[ "$SEC_HSTS_WEAK" == true ]] && score=$((score-15)) || true
   [[ "$SEC_CSP"  == false ]] && score=$((score-20)) || true
   [[ "$SEC_XCTO" == false ]] && score=$((score-15)) || true
   [[ "$SEC_XFO"  == false ]] && score=$((score-15)) || true
@@ -929,13 +943,19 @@ analyze_seguridad() {
     SEC_SSLCHECK_RESULT=$($SSLCHECK_CMD "$domain" 2>/dev/null | head -3 || echo "")
   fi
 
-  # Cookies
+  # Cookies — U4: analizar por cookie; cookies de sesión tienen prioridad
   local cookie_hdr
   cookie_hdr=$(echo "$headers" | grep "set-cookie" || echo "")
   SEC_COOKIE_SECURE=true; SEC_COOKIE_HTTPONLY=true
   if echo "$cookie_hdr" | grep -qi "set-cookie"; then
-    echo "$cookie_hdr" | grep -qi "secure"   || SEC_COOKIE_SECURE=false
-    echo "$cookie_hdr" | grep -qi "httponly" || SEC_COOKIE_HTTPONLY=false
+    # Buscar primero en cookies de sesión conocidas
+    local _sess_cookies _all_cookies _target
+    _sess_cookies=$(echo "$cookie_hdr" | grep -iE 'set-cookie:[[:space:]]*(PHPSESSID|session|auth|token|jwt|_session|connect\.sid|SESS|sid)[=;]')
+    _all_cookies="$cookie_hdr"
+    # Usar cookies de sesión si existen, si no evaluar todas
+    _target="${_sess_cookies:-$_all_cookies}"
+    echo "$_target" | grep -qi "secure"   || SEC_COOKIE_SECURE=false
+    echo "$_target" | grep -qi "httponly" || SEC_COOKIE_HTTPONLY=false
   fi
   [[ "$SEC_COOKIE_SECURE"   == false ]] && score=$((score-10)) || true
   [[ "$SEC_COOKIE_HTTPONLY" == false ]] && score=$((score-10)) || true
@@ -961,12 +981,22 @@ analyze_ciberseguridad() {
   echo "$CYBER_SERVER"    | grep -qE "[0-9]\.|apache|nginx|iis|php" && score=$((score-15)) || true
   [[ -n "$powered_hdr" ]] && score=$((score-10)) || true
 
-  local dirs=("/admin" "/backup" "/.git" "/config" "/uploads" "/.env" "/wp-admin" "/phpinfo.php" "/swagger" "/api-docs")
+  # A2 + N3: exposed paths — sin seguir redirects (evita falsos positivos en soft-404)
+  local dirs=("/admin" "/backup" "/config" "/uploads" "/.env" "/wp-admin" "/phpinfo.php" "/swagger" "/api-docs" "/api/users" "/api/admin" "/api/config" "/api/keys" "/api/v1/users")
   CYBER_EXPOSED_DIRS=()
   for d in "${dirs[@]}"; do
-    local st; st=$(http_status "${URL%/}${d}")
+    local st; st=$(http_status_noredirect "${URL%/}${d}")
     [[ "$st" == "200" ]] && CYBER_EXPOSED_DIRS+=("$d") && score=$((score-10)) || true
   done
+  # A2: .git/HEAD — verificar contenido real (sin -L para no seguir redirects)
+  local _git_head_content
+  _git_head_content=$(curl -sSo - --max-time 5 \
+    --user-agent "Mozilla/5.0 (compatible; homium-audit/1.1)" \
+    "${URL%/}/.git/HEAD" 2>/dev/null | head -1 || echo "")
+  if echo "$_git_head_content" | grep -qE '^ref: refs/heads/|^[0-9a-f]{40}$'; then
+    CYBER_EXPOSED_DIRS+=("/.git/HEAD (repo extraíble)")
+    score=$((score-20))
+  fi
   [[ ${#CYBER_EXPOSED_DIRS[@]} -eq 0 ]] && CYBER_EXPOSED_DIRS=("Ninguno detectado")
 
   local sec_txt_status sec_txt_contact
@@ -1003,13 +1033,66 @@ analyze_ciberseguridad() {
   [[ -z "$CYBER_SPF"   ]] && CYBER_SPF="AUSENTE"
   [[ -z "$CYBER_DMARC" ]] && CYBER_DMARC="AUSENTE"
   [[ -z "$CYBER_DKIM"  ]] && CYBER_DKIM="AUSENTE"
-  [[ "$CYBER_SPF"   == "AUSENTE" ]] && score=$((score-10)) || true
-  [[ "$CYBER_DMARC" == "AUSENTE" ]] && score=$((score-10)) || true
-  [[ "$CYBER_DKIM"  == "AUSENTE" ]] && score=$((score-5))  || true
+
+  # U1 — DMARC: penalizar según política real (p=none no protege)
+  CYBER_DMARC_POLICY="ausente"
+  if [[ "$CYBER_DMARC" != "AUSENTE" ]]; then
+    local _dp; _dp=$(echo "$CYBER_DMARC" | grep -oiE 'p=(none|quarantine|reject)' | cut -d= -f2 | tr '[:upper:]' '[:lower:]')
+    CYBER_DMARC_POLICY="${_dp:-desconocido}"
+  fi
+  if   [[ "$CYBER_DMARC_POLICY" == "ausente"    ]]; then score=$((score-10))
+  elif [[ "$CYBER_DMARC_POLICY" == "none"        ]]; then score=$((score-7))
+  elif [[ "$CYBER_DMARC_POLICY" == "quarantine"  ]]; then score=$((score-3))
+  fi
+
+  # U2 — SPF: detectar +all (cualquier servidor puede enviar) y ?all (neutral)
+  CYBER_SPF_POLICY="ausente"
+  if [[ "$CYBER_SPF" != "AUSENTE" ]]; then
+    if   echo "$CYBER_SPF" | grep -qE '[[:space:]]\+all$|\+all[[:space:]]'; then CYBER_SPF_POLICY="permissive"
+    elif echo "$CYBER_SPF" | grep -qE '[[:space:]]\?all$|\?all[[:space:]]'; then CYBER_SPF_POLICY="neutral"
+    elif echo "$CYBER_SPF" | grep -qE '[[:space:]]~all$|~all[[:space:]]|[[:space:]]-all$|-all[[:space:]]'; then CYBER_SPF_POLICY="ok"
+    else CYBER_SPF_POLICY="ok"
+    fi
+  fi
+  if   [[ "$CYBER_SPF_POLICY" == "ausente"    ]]; then score=$((score-10))
+  elif [[ "$CYBER_SPF_POLICY" == "permissive" ]]; then score=$((score-15))
+  elif [[ "$CYBER_SPF_POLICY" == "neutral"    ]]; then score=$((score-5))
+  fi
+
+  [[ "$CYBER_DKIM" == "AUSENTE" ]] && score=$((score-5)) || true
 
   CYBER_SOURCE_MAPS=false
   echo "$HTML_CACHE" | grep -qiE '\.map"|sourceMappingURL' && CYBER_SOURCE_MAPS=true || true
   [[ "$CYBER_SOURCE_MAPS" == true ]] && score=$((score-10)) || true
+
+  # M2: GraphQL introspection expuesta
+  CYBER_GRAPHQL_EXPOSED=false
+  local _gql_response
+  _gql_response=$(curl -sSL --max-time 6 -X POST \
+    -H "Content-Type: application/json" \
+    -d '{"query":"{__schema{types{name}}}"}' \
+    "${URL%/}/graphql" 2>/dev/null | head -c 200 || echo "")
+  if echo "$_gql_response" | grep -q '"__schema"'; then
+    CYBER_GRAPHQL_EXPOSED=true
+    CYBER_EXPOSED_DIRS+=("/graphql (introspección activa)")
+    score=$((score-15))
+  fi
+
+  # M1: Error pages — stack traces o rutas absolutas expuestas
+  CYBER_ERROR_DISCLOSURE=false
+  local _err_body
+  _err_body=$(curl -sSL --max-time 6 "${URL%/}/$(cat /dev/urandom 2>/dev/null | LC_ALL=C tr -dc 'a-z0-9' 2>/dev/null | head -c 12 || echo 'audit-xyz-404-check')" 2>/dev/null | head -c 500 || echo "")
+  if echo "$_err_body" | grep -qiE 'at [A-Za-z]+\.|Traceback \(most recent|/var/www/|/home/[a-z]+/|stack trace|exception in thread|PHP Fatal error|TypeError:|SyntaxError:'; then
+    CYBER_ERROR_DISCLOSURE=true
+    score=$((score-10))
+  fi
+
+  # M6: Backup files ampliados — sin seguir redirects
+  local backup_dirs=("/.env.production" "/.env.local" "/.env.backup" "/database.sql" "/backup.sql" "/db.sql" "/dump.sql" "/wp-config.php.bak" "/config.yml" "/config.yaml" "/credentials.json" "/site.zip" "/backup.zip")
+  for d in "${backup_dirs[@]}"; do
+    local st; st=$(http_status_noredirect "${URL%/}${d}")
+    [[ "$st" == "200" ]] && CYBER_EXPOSED_DIRS+=("$d") && score=$((score-10)) || true
+  done
 
   (( score < 0 )) && score=0; (( score > 100 )) && score=100
   set_score "ciberseguridad" "$score"; SCORE_CIBERSEGURIDAD=$score
@@ -1019,7 +1102,7 @@ analyze_ciberseguridad() {
 # ─── DIMENSION 7: Diseño ──────────────────────────────────────────────────────
 analyze_diseno() {
   step "Analizando Diseño"
-  local score=70
+  local score=100
   local html
   html="$HTML_CACHE"
 
@@ -1083,7 +1166,16 @@ analyze_geo() {
     if [[ "$GEO_SITE_TYPE" == "institucional" ]]; then
       grep -qi 'ghost\.io\|content="Ghost' <<< "$html"                && GEO_SITE_TYPE="blog"
       grep -qiE 'href="[^"]*/blog|href="[^"]*/articulos|href="[^"]*/noticias' <<< "$html" && GEO_SITE_TYPE="blog"
-      grep -qiE '__NEXT_DATA__|/_next/|__nuxt|/_nuxt/' <<< "$html"    && GEO_SITE_TYPE="saas"
+      # Next.js/Nuxt solo es saas si NO tiene señales de blog o e-commerce
+      if grep -qiE '__NEXT_DATA__|/_next/|__nuxt|/_nuxt/' <<< "$html"; then
+        if grep -qiE 'href="[^"]*/blog|href="[^"]*/articulos|href="[^"]*/noticias|href="[^"]*/posts' <<< "$html"; then
+          GEO_SITE_TYPE="blog"
+        elif grep -qiE '/cart|/carrito|/shop|/tienda|/checkout|add-to-cart|woocommerce' <<< "$html"; then
+          GEO_SITE_TYPE="ecommerce"
+        else
+          GEO_SITE_TYPE="saas"
+        fi
+      fi
     fi
     if [[ "$GEO_SITE_TYPE" == "institucional" ]]; then
       local _ext_pages
@@ -1355,13 +1447,33 @@ analyze_tecnologia() {
   grep -qi 'doubleclick\.net' <<< "$html"                   && TECH_AD_SCRIPTS="DoubleClick" || true
   grep -qi 'amazon-adsystem' <<< "$html"                    && TECH_AD_SCRIPTS="Amazon Ads" || true
 
+  # N4: Vibe coding detection — herramienta generadora + señales de código no revisado
+  TECH_GENERATOR="Desconocido"
+  TECH_VIBE_CODED=false
+  TECH_VIBE_SIGNALS=()
+  # Meta generator explícito
+  local _gen; _gen=$(echo "$html" | grep -oiE '<meta[^>]*name="generator"[^>]*content="[^"]*"' | grep -oiE 'content="[^"]*"' | sed 's/content="\(.*\)"/\1/' | head -1 || echo "")
+  [[ -n "$_gen" ]] && TECH_GENERATOR="$_gen"
+  echo "$_gen" | grep -qiE 'webflow'     && TECH_VIBE_CODED=true && TECH_VIBE_SIGNALS+=("Webflow")    || true
+  echo "$_gen" | grep -qiE 'framer'      && TECH_VIBE_CODED=true && TECH_VIBE_SIGNALS+=("Framer")     || true
+  echo "$_gen" | grep -qiE 'squarespace' && TECH_VIBE_CODED=true && TECH_VIBE_SIGNALS+=("Squarespace") || true
+  # Stack fingerprints
+  grep -qiE 'supabase\.co|@supabase/supabase-js' <<< "$html" && grep -qiE 'radix-ui|cmdk|lucide-react' <<< "$html" && TECH_VIBE_CODED=true && TECH_VIBE_SIGNALS+=("Lovable (Supabase+shadcn)") || true
+  grep -qiE 'framerusercontent\.com|framer-motion' <<< "$html" && TECH_VIBE_CODED=true && TECH_VIBE_SIGNALS+=("Framer Motion") || true
+  grep -qiE 'stackblitz|bolt\.new' <<< "$html" && TECH_VIBE_CODED=true && TECH_VIBE_SIGNALS+=("Bolt.new") || true
+  # Título genérico de scaffolding no cambiado
+  echo "$html" | grep -qi '<title>\s*\(Create Next App\|Vite App\|React App\|My App\|App\)\s*</title>' && TECH_VIBE_CODED=true && TECH_VIBE_SIGNALS+=("Título genérico sin cambiar") || true
+  # Copywriting AI típico
+  grep -qiE 'seamlessly integrate|cutting.edge solution|empowering (your )?users|leverage our|revolutionize your' <<< "$html" && TECH_VIBE_SIGNALS+=("Copywriting AI detectado") || true
+  [[ ${#TECH_VIBE_SIGNALS[@]} -eq 0 ]] && TECH_VIBE_SIGNALS=("Ninguna")
+
   ok "Stack tecnológico detectado"
 }
 
 # ─── DIMENSION 8: UX ──────────────────────────────────────────────────────────
 analyze_ux() {
   step "Analizando UX"
-  local score=70
+  local score=100
   local html
   html="$HTML_CACHE"
 
@@ -1415,9 +1527,20 @@ analyze_legal() {
   local html
   html="$HTML_CACHE"
 
-  LEGAL_PRIVACY=false; grep -qi "privacy\|privacidad\|política" <<< "$html"          && LEGAL_PRIVACY=true || true
-  LEGAL_TERMS=false;   grep -qi "terms\|condiciones\|aviso.legal" <<< "$html"         && LEGAL_TERMS=true   || true
-  LEGAL_COOKIES=false; grep -qi "cookie\|gdpr\|rgpd\|consent" <<< "$html"             && LEGAL_COOKIES=true || true
+  # M13: verificar link real a política, no solo keyword en cualquier texto
+  LEGAL_PRIVACY=false
+  echo "$html" | grep -oiE '<a[^>]*href="[^"]*"[^>]*>[^<]*</a>' | grep -qi "privacy\|privacidad\|política de privacidad\|aviso de privacidad" && LEGAL_PRIVACY=true || true
+  [[ "$LEGAL_PRIVACY" == false ]] && echo "$html" | grep -oiE 'href="[^"]*priv[^"]*"' | grep -qi "priv" && LEGAL_PRIVACY=true || true
+
+  LEGAL_TERMS=false
+  echo "$html" | grep -oiE '<a[^>]*href="[^"]*"[^>]*>[^<]*</a>' | grep -qi "terms\|condiciones\|aviso legal\|términos" && LEGAL_TERMS=true || true
+  [[ "$LEGAL_TERMS" == false ]] && echo "$html" | grep -oiE 'href="[^"]*(terms|condicion|legal|tos)[^"]*"' | grep -qi "." && LEGAL_TERMS=true || true
+
+  LEGAL_COOKIES=false
+  echo "$html" | grep -oiE '<a[^>]*href="[^"]*"[^>]*>[^<]*</a>' | grep -qi "cookie" && LEGAL_COOKIES=true || true
+  [[ "$LEGAL_COOKIES" == false ]] && echo "$html" | grep -oiE 'href="[^"]*cookie[^"]*"' | grep -qi "." && LEGAL_COOKIES=true || true
+  [[ "$LEGAL_COOKIES" == false ]] && grep -qi 'gdpr\|rgpd\|consent\|cookieconsent\|cookie-banner\|cookiebot\|onetrust' <<< "$html" && LEGAL_COOKIES=true || true
+
   LEGAL_GDPR=false;    grep -qi "gdpr\|rgpd\|reglamento.*datos" <<< "$html"           && LEGAL_GDPR=true    || true
 
   LEGAL_TRACKERS=()
@@ -1506,6 +1629,7 @@ compute_dimension_contexts() {
   # Seguridad
   local sec_n=0 sec_list=""
   [[ "${SEC_HSTS:-false}"           != "true" ]] && sec_n=$((sec_n+1)) && sec_list="${sec_list}HSTS, "
+  [[ "${SEC_HSTS_WEAK:-false}"      == "true" ]] && sec_n=$((sec_n+1)) && sec_list="${sec_list}HSTS max-age insuficiente (${SEC_HSTS_MAXAGE:-0}s), "
   [[ "${SEC_CSP:-false}"            != "true" ]] && sec_n=$((sec_n+1)) && sec_list="${sec_list}CSP, "
   [[ "${SEC_XCTO:-false}"           != "true" ]] && sec_n=$((sec_n+1)) && sec_list="${sec_list}X-Content-Type, "
   [[ "${SEC_XFO:-false}"            != "true" ]] && sec_n=$((sec_n+1)) && sec_list="${sec_list}X-Frame-Options, "
@@ -1521,8 +1645,13 @@ compute_dimension_contexts() {
 
   # Ciberseguridad
   local cy_issues=""
-  [[ "$CYBER_SPF"   == "AUSENTE" ]] && cy_issues="${cy_issues}Sin SPF. "
-  [[ "$CYBER_DMARC" == "AUSENTE" ]] && cy_issues="${cy_issues}Sin DMARC. "
+  if   [[ "${CYBER_SPF_POLICY:-ausente}" == "ausente"    ]]; then cy_issues="${cy_issues}Sin SPF. "
+  elif [[ "${CYBER_SPF_POLICY:-ausente}" == "permissive" ]]; then cy_issues="${cy_issues}SPF con +all — cualquier servidor puede suplantar el dominio. "
+  elif [[ "${CYBER_SPF_POLICY:-ausente}" == "neutral"    ]]; then cy_issues="${cy_issues}SPF con ?all — sin protección real contra spoofing. "
+  fi
+  if   [[ "${CYBER_DMARC_POLICY:-ausente}" == "ausente" ]]; then cy_issues="${cy_issues}Sin DMARC. "
+  elif [[ "${CYBER_DMARC_POLICY:-ausente}" == "none"    ]]; then cy_issues="${cy_issues}DMARC en p=none — solo monitoreo, el dominio puede ser suplantado para phishing. "
+  fi
   [[ "$CYBER_DKIM"  == "AUSENTE" ]] && cy_issues="${cy_issues}Sin DKIM. "
   [[ "${CYBER_EXPOSED_DIRS[0]:-Ninguno detectado}" != "Ninguno detectado" ]] && cy_issues="${cy_issues}Directorios expuestos. "
   [[ "${CYBER_SOURCE_MAPS:-false}" == "true" ]] && cy_issues="${cy_issues}Source maps públicos. "
@@ -1566,16 +1695,21 @@ compute_dimension_contexts() {
   else                                   CTX_UX="UX deficiente — impacto directo en conversión. ${u_issues}"
   fi
 
-  # GEO — formato: [nombre técnico] — [consecuencia de negocio]
-  local g_issues=""
-  [[ "$GEO_BOT_CHATGPT" == false ]]  && g_issues="${g_issues}GPTBot bloqueado — el sitio es invisible para ChatGPT. "
-  [[ "$GEO_SCHEMA_FAQ" == false ]]   && g_issues="${g_issues}FAQPage schema ausente — ChatGPT y Gemini no pueden citar el contenido en sus respuestas. "
-  [[ "$GEO_LLMS_TXT" == false ]]     && g_issues="${g_issues}/llms.txt ausente — la IA no sabe qué páginas del sitio priorizar. "
-  [[ "$GEO_PAGE_ABOUT" == false ]]   && g_issues="${g_issues}Página de empresa ausente — señal de confianza E-E-A-T débil para la IA. "
-  [[ "$GEO_PAGE_CONTACT" == false ]] && g_issues="${g_issues}Página de contacto ausente — reduce la credibilidad del sitio ante los motores de IA. "
-  if   (( ${SCORE_GEO:-0} >= 75 )); then CTX_GEO="El sitio aparece cuando ChatGPT, Gemini y Claude responden preguntas del sector. ${g_issues:-Señales de confianza y contenido correctamente configuradas.}"
-  elif (( ${SCORE_GEO:-0} >= 50 )); then CTX_GEO="Los motores de IA tienen acceso pero raramente citan el sitio — cada búsqueda de IA es una oportunidad perdida. ${g_issues}"
-  else                                   CTX_GEO="Sitio prácticamente invisible para ChatGPT, Gemini y Claude. Potenciales clientes que buscan via IA no están encontrando el negocio. ${g_issues}"
+  # GEO — U6: prefijo refleja el estado real, no solo el score umbral
+  local g_issues="" g_bots_blocked=0
+  [[ "$GEO_BOT_CHATGPT" == false ]]  && g_issues="${g_issues}GPTBot bloqueado — el sitio es invisible para ChatGPT. " && g_bots_blocked=$((g_bots_blocked+1))
+  [[ "$GEO_BOT_GEMINI" == false ]]   && g_issues="${g_issues}Googlebot/Gemini bloqueado. " && g_bots_blocked=$((g_bots_blocked+1))
+  [[ "$GEO_SCHEMA_FAQ" == false ]]   && g_issues="${g_issues}FAQPage schema ausente — ChatGPT y Gemini no pueden citar el contenido. "
+  [[ "$GEO_LLMS_TXT" == false ]]     && g_issues="${g_issues}/llms.txt ausente — la IA no sabe qué páginas priorizar. "
+  [[ "$GEO_PAGE_ABOUT" == false ]]   && g_issues="${g_issues}Página de empresa ausente — E-E-A-T débil para la IA. "
+  [[ "$GEO_PAGE_CONTACT" == false ]] && g_issues="${g_issues}Página de contacto ausente — reduce credibilidad ante motores de IA. "
+  # Prefijo basado en estado real: si hay bots bloqueados, no decir "aparece en ChatGPT"
+  if (( g_bots_blocked > 0 )) || (( ${SCORE_GEO:-0} < 50 )); then
+    CTX_GEO="Sitio con visibilidad limitada en IA — potenciales clientes no están encontrando el negocio via ChatGPT, Gemini o Claude. ${g_issues}"
+  elif (( ${SCORE_GEO:-0} >= 75 )); then
+    CTX_GEO="Buena visibilidad en motores de IA. ${g_issues:-Señales de confianza y contenido correctamente configuradas.}"
+  else
+    CTX_GEO="Los motores de IA tienen acceso pero el sitio raramente es citado — cada búsqueda de IA es una oportunidad perdida. ${g_issues}"
   fi
 }
 
@@ -3163,9 +3297,13 @@ generate_json() {
     "server_header": "$(_je "${CYBER_SERVER:-Oculto}")", "powered_by": "$(_je "${CYBER_POWERED_BY:-Oculto}")",
     "exposed_paths": ${json_exposed_paths},
     "security_txt": ${CYBER_SEC_TXT:-0}, "security_txt_contact": "$(_je "${CYBER_SEC_TXT_CONTACT:-}")",
-    "spf": "$(_je "${CYBER_SPF:-AUSENTE}")", "dmarc": "$(_je "${CYBER_DMARC:-AUSENTE}")",
+    "spf": "$(_je "${CYBER_SPF:-AUSENTE}")", "spf_policy": "$(_je "${CYBER_SPF_POLICY:-ausente}")",
+    "dmarc": "$(_je "${CYBER_DMARC:-AUSENTE}")", "dmarc_policy": "$(_je "${CYBER_DMARC_POLICY:-ausente}")",
     "dkim": "$(_je "${CYBER_DKIM:-AUSENTE}")", "bimi": "$(_je "${CYBER_BIMI:-AUSENTE}")",
-    "source_maps_exposed": $(_jb "${CYBER_SOURCE_MAPS:-false}"), "dev_tools_active": null
+    "source_maps_exposed": $(_jb "${CYBER_SOURCE_MAPS:-false}"),
+    "graphql_exposed": $(_jb "${CYBER_GRAPHQL_EXPOSED:-false}"),
+    "error_disclosure": $(_jb "${CYBER_ERROR_DISCLOSURE:-false}"),
+    "dev_tools_active": null
   },
   "calidad_tecnica": {
     "doctype": $(_jb "${CT_DOCTYPE:-false}"), "lang_attribute": $(_jb "${CT_LANG:-false}"),
@@ -3203,6 +3341,9 @@ generate_json() {
     "language": "$(_je "${TECH_LANGUAGE:-Desconocido}")", "server": "$(_je "${TECH_SERVER:-Oculto}")",
     "cdn": "$(_je "${TECH_CDN:-No detectado}")", "analytics": ${json_analytics},
     "error_tracking": "$(_je "${TECH_ERROR_TRACKING:-Ninguno detectado}")", "ab_testing": "$(_je "${TECH_AB_TESTING:-Ninguno detectado}")", "ad_scripts": "$(_je "${TECH_AD_SCRIPTS:-Ninguno detectado}")",
+    "generator": "$(_je "${TECH_GENERATOR:-Desconocido}")",
+    "vibe_coded": $(_jb "${TECH_VIBE_CODED:-false}"),
+    "vibe_signals": $(_jarr "${TECH_VIBE_SIGNALS[@]:-}"),
     "webanalyze_raw": ${json_webanalyze}
   },
   "email_deliverability": {
