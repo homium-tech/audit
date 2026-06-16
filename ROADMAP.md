@@ -7,6 +7,20 @@ Lista unificada de pendientes. Consolida ROADMAP-GEO, ROADMAP-SECURITY + hallazg
 
 ---
 
+## 🐛 BUGS DETECTADOS EN AUDITORÍA REAL (aluzian.com, v1.8.0)
+
+Encontrados al comparar el MD generado contra los datos reales del JSON. Todos en `generate_report()`.
+
+| # | Bug | Línea aprox | Fix |
+|---|-----|-------------|-----|
+| B-R1 | Conclusión dice "Sin redirección HTTP→HTTPS" aunque `SEC_HTTPS_REDIRECT=true` | ~L608 narrative | Agregar condicional `[[ "$SEC_HTTPS_REDIRECT" == true ]]` antes de incluir esa frase |
+| B-R2 | Conclusión menciona "X-Frame-Options" como faltante aunque está presente | ~L608 narrative | El texto de brechas de seguridad debe iterar sobre los headers realmente ausentes, no hardcodear |
+| B-R3 | Conclusión dice "Sin DMARC y DKIM" aunque DKIM está presente | ~L610 narrative | Verificar `$CYBER_DKIM != "AUSENTE"` antes de incluir DKIM en la lista de brechas |
+| B-R4 | Conclusión menciona "/llms.txt ausente" aunque `GEO_LLMS_TXT=true` | ~L609 narrative | Agregar condicional `[[ "$GEO_LLMS_TXT" == false ]]` en el texto GEO del narrative |
+| B-R5 | Matriz de Priorización solo genera 3 filas — la Hoja de Ruta tiene 12 acciones | generate_report | Revisar si la matriz usa la misma fuente que la Hoja de Ruta o se genera por separado |
+
+---
+
 ## 🚀 EMPEZAR AQUÍ — Solo script, sin tocar audit-platform
 
 Todos estos se implementan **solo en `homium-audit.sh`**. El JSON sigue siendo compatible con la plataforma actual.
