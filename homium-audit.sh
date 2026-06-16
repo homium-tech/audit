@@ -55,7 +55,7 @@ HTMLHINT_CMD=$(resolve_cmd "htmlhint" "htmlhint")
 SSLCHECK_CMD=$(resolve_cmd "ssl-checker" "ssl-checker")
 
 # ─── Usage ───────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="1.10.0"
+SCRIPT_VERSION="1.11.0"
 
 usage() {
   echo -e "${BOLD}homium-audit${RESET} v${SCRIPT_VERSION} — Auditoría profesional de sitios web"
@@ -873,7 +873,7 @@ analyze_seguridad() {
   SEC_RP=false;   echo "$headers" | grep -q "referrer-policy"           && SEC_RP=true   || true
   SEC_PER=false;  echo "$headers" | grep -q "permissions-policy"        && SEC_PER=true  || true
 
-  # HSTS max-age value + calidad
+  # HSTS max-age value + calidad + M4: includeSubDomains y preload
   SEC_HSTS_MAXAGE=$(echo "$headers" | grep "strict-transport-security" \
     | grep -oE 'max-age=[0-9]+' | grep -oE '[0-9]+' | head -1 || echo "0")
   SEC_HSTS_MAXAGE=${SEC_HSTS_MAXAGE:-0}
@@ -881,14 +881,26 @@ analyze_seguridad() {
   if [[ "$SEC_HSTS" == true ]] && (( SEC_HSTS_MAXAGE < 86400 )); then
     SEC_HSTS_WEAK=true
   fi
+  SEC_HSTS_SUBDOMAINS=false; SEC_HSTS_PRELOAD=false
+  if [[ "$SEC_HSTS" == true ]]; then
+    local _hsts_val; _hsts_val=$(echo "$headers" | grep -i "strict-transport-security" | head -1)
+    echo "$_hsts_val" | grep -qi "includesubdomains" && SEC_HSTS_SUBDOMAINS=true || true
+    echo "$_hsts_val" | grep -qi "preload"           && SEC_HSTS_PRELOAD=true    || true
+  fi
 
   # CSP quality — detectar directivas inseguras
   SEC_CSP_UNSAFE=false
   echo "$headers" | grep "content-security-policy" | grep -qi "unsafe-inline\|unsafe-eval" \
     && SEC_CSP_UNSAFE=true || true
 
-  # SRI en scripts externos
+  # M3: SRI — ratio real de scripts externos con/sin integrity
   SEC_SRI=false; echo "$HTML_CACHE" | grep -qi 'integrity="sha' && SEC_SRI=true || true
+  local _sri_total _sri_with
+  _sri_total=$(echo "$HTML_CACHE" | grep -oiE '<script[^>]+src="https?://[^"]*"' | wc -l | tr -d ' ')
+  _sri_with=$(echo "$HTML_CACHE"  | grep -oiE '<script[^>]+src="https?://[^"]*"[^>]*integrity="sha' | wc -l | tr -d ' ')
+  SEC_SRI_TOTAL=${_sri_total:-0}; SEC_SRI_WITH=${_sri_with:-0}
+  SEC_SRI_MISSING=$(( SEC_SRI_TOTAL - SEC_SRI_WITH ))
+  (( SEC_SRI_MISSING < 0 )) && SEC_SRI_MISSING=0
 
   # CAA y MX DNS records
   SEC_CAA="AUSENTE"; SEC_MX="AUSENTE"
@@ -916,6 +928,10 @@ analyze_seguridad() {
   [[ "$SEC_RP"   == false ]] && score=$((score-10)) || true
   [[ "$SEC_PER"  == false ]] && score=$((score-10)) || true
   [[ "$SEC_CSP_UNSAFE" == true ]] && score=$((score-10)) || true
+  # M3: más del 50% de scripts externos sin SRI penaliza
+  if (( SEC_SRI_TOTAL > 2 )) && (( SEC_SRI_MISSING * 100 / SEC_SRI_TOTAL > 50 )); then
+    score=$((score-8))
+  fi
 
   # HTTP→HTTPS redirect: NO seguir redirects (-no-L) para capturar el 301/302 real
   local http_code
@@ -1083,6 +1099,14 @@ analyze_ciberseguridad() {
   fi
 
   [[ "$CYBER_DKIM" == "AUSENTE" ]] && score=$((score-5)) || true
+
+  # M5: MTA-STS — TLS forzado en email entrante
+  CYBER_MTA_STS=false
+  if [[ "$SEC_MX" != "AUSENTE" && -n "${SEC_MX:-}" ]]; then
+    local _mta_sts_status
+    _mta_sts_status=$(http_status_noredirect "https://mta-sts.${domain}/.well-known/mta-sts.txt")
+    [[ "$_mta_sts_status" == "200" ]] && CYBER_MTA_STS=true || score=$((score-5))
+  fi
 
   CYBER_SOURCE_MAPS=false
   echo "$HTML_CACHE" | grep -qiE '\.map"|sourceMappingURL' && CYBER_SOURCE_MAPS=true || true
@@ -3500,11 +3524,12 @@ generate_json() {
   "seguridad": {
     "headers": {
       "hsts": $(_jb "${SEC_HSTS:-false}"), "hsts_max_age": ${hsts_maxage},
+      "hsts_subdomains": $(_jb "${SEC_HSTS_SUBDOMAINS:-false}"), "hsts_preload": $(_jb "${SEC_HSTS_PRELOAD:-false}"),
       "csp": $(_jb "${SEC_CSP:-false}"), "csp_unsafe_inline": $(_jb "${SEC_CSP_UNSAFE:-false}"),
       "csp_wildcard": $(_jb "${SEC_CSP_WILDCARD:-false}"), "csp_nonce_bypass": $(_jb "${SEC_CSP_NONCE_BYPASS:-false}"),
       "x_content_type_options": $(_jb "${SEC_XCTO:-false}"), "x_frame_options": $(_jb "${SEC_XFO:-false}"),
       "referrer_policy": $(_jb "${SEC_RP:-false}"), "permissions_policy": $(_jb "${SEC_PER:-false}"),
-      "sri": $(_jb "${SEC_SRI:-false}")
+      "sri": $(_jb "${SEC_SRI:-false}"), "sri_total": ${SEC_SRI_TOTAL:-0}, "sri_with": ${SEC_SRI_WITH:-0}, "sri_missing": ${SEC_SRI_MISSING:-0}
     },
     "https_redirect": $(_jb "${SEC_HTTPS_REDIRECT:-false}"),
     "tls_old_version": $(_jb "${SEC_TLS_OLD:-false}"),
@@ -3528,6 +3553,7 @@ generate_json() {
     "error_disclosure": $(_jb "${CYBER_ERROR_DISCLOSURE:-false}"),
     "cors_unsafe": $(_jb "${CYBER_CORS_UNSAFE:-false}"),
     "api_keys_exposed": $(_jarr "${CYBER_API_KEYS_EXPOSED[@]:-}"),
+    "mta_sts": $(_jb "${CYBER_MTA_STS:-false}"),
     "dev_tools_active": null
   },
   "calidad_tecnica": {

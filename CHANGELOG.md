@@ -6,6 +6,16 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
 ---
 
+## [1.11.0] — junio 2026
+
+### Agregado — Seguridad complementaria
+
+- **SRI ratio real (M3)** — ya no es solo un boolean. Cuenta scripts externos totales vs cuántos tienen `integrity="sha..."`. Penaliza −8pts si >50% sin SRI. JSON: `sri_total`, `sri_with`, `sri_missing`.
+- **HSTS includeSubDomains + preload (M4)** — detecta si el header HSTS tiene las directivas que permiten registro en la preload list del browser. JSON: `hsts_subdomains`, `hsts_preload`.
+- **MTA-STS (M5)** — verifica `https://mta-sts.{domain}/.well-known/mta-sts.txt`. Sin MTA-STS, el email entrante puede ser interceptado en tránsito (STARTTLS stripping). Penaliza −5pts si hay MX y no hay MTA-STS. JSON: `ciberseguridad.mta_sts`.
+
+---
+
 ## [1.10.0] — junio 2026
 
 ### Agregado — GEO v2 completo
