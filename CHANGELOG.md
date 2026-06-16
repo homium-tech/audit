@@ -6,6 +6,46 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
 ---
 
+## [1.8.0] — junio 2026
+
+### Corregido — falsos positivos activos
+
+- **DMARC `p=none` pasaba como seguro** — ahora se extrae y evalúa la política real: `p=none` penaliza −7 pts (solo monitoreo, el dominio puede ser suplantado para phishing), `p=quarantine` −3 pts, ausente −10 pts. Campo `dmarc_policy` agregado al JSON.
+- **SPF `+all` pasaba como seguro** — detecta `+all` (cualquier servidor puede enviar, −15 pts crítico), `?all` (neutral, −5 pts) y ausencia (−10 pts). Campo `spf_policy` agregado al JSON.
+- **HSTS `max-age` no se evaluaba** — `max-age < 86400` (menos de 1 día) ahora penaliza −15 pts adicionales sobre la ausencia del header. Aparece en CTX_SEGURIDAD con el valor exacto.
+- **Cookies: análisis global ocultaba sesiones expuestas** — identifica primero cookies de sesión por nombre (`PHPSESSID`, `session`, `auth`, `token`, `jwt`, `_session`, `connect.sid`) antes de evaluar todas. Evita que cookies de analytics enmascaren la cookie de sesión insegura.
+- **GEO_SITE_TYPE: Next.js/Nuxt siempre clasificaba como `saas`** — ahora verifica señales de blog (`/blog`, `/articulos`, `/posts`) y e-commerce (`/cart`, `/shop`, `woocommerce`) antes de asumir SaaS. Corrige scores GEO incorrectos para la mayoría de sitios modernos.
+- **CTX_GEO contradictorio** — el prefijo positivo ("El sitio aparece en ChatGPT…") ya no aparece junto a issues que lo contradicen. El prefijo ahora refleja el estado real de bots bloqueados.
+- **Paths expuestos: falsos positivos en soft-404** — nueva función `http_status_noredirect` para verificar rutas sensibles sin seguir redirects. Sitios que redirigen todo al home (GoDaddy, landing pages) dejaban de reportar 29 rutas como expuestas.
+
+### Agregado
+
+- **`.git/HEAD` content check** — verifica el contenido real del archivo (no solo status del directorio). Si responde `ref: refs/heads/...` el repositorio completo es extraíble. Penalización −20 pts.
+- **GraphQL introspection** — POST a `/graphql` con query `__schema`. Si responde con el schema completo se agrega a rutas expuestas (−15 pts).
+- **Error pages disclosure** — detecta stack traces, rutas absolutas del sistema y mensajes de framework en respuestas 404/500 producidas en entornos de producción.
+- **Backup files ampliados** — 13 patrones adicionales: `.env.production`, `.env.local`, `database.sql`, `backup.sql`, `wp-config.php.bak`, `config.yml`, `credentials.json`, `site.zip`, entre otros.
+- **Endpoints API sin auth** — 6 rutas nuevas: `/api/users`, `/api/admin`, `/api/config`, `/api/keys`, `/api/v1/users`. Todas usan `http_status_noredirect`.
+- **Vibe coding detection** — detecta herramienta generadora vía `<meta name="generator">` (Webflow, Framer, Squarespace, Astro + versión exacta) y fingerprints de stack (Lovable: Supabase+shadcn, Bolt.new, Framer Motion). Señales adicionales: título genérico de scaffolding sin cambiar, copywriting AI típico. Campos `generator`, `vibe_coded` y `vibe_signals` en JSON.
+- **Performance score corregido** — cuando Lighthouse está disponible: LH 60% + heurístico 40%. Antes era un promedio simple que mezclaba dos sistemas de medición incompatibles.
+- **UX y Diseño: score base 100** — ambas dimensiones arrancaban en 70, inflando los scores de sitios sin señales positivas. Ahora inician en 100 con penalizaciones equivalentes, consistente con el resto de dimensiones.
+- **Legal: detección por links reales** — verifica que `href` apunte a una URL de política real en lugar de buscar keywords en cualquier texto del HTML.
+
+### JSON — campos nuevos (sin impacto en audit-platform existente)
+
+- `ciberseguridad.dmarc_policy` — `"ausente"` | `"none"` | `"quarantine"` | `"reject"`
+- `ciberseguridad.spf_policy` — `"ausente"` | `"permissive"` | `"neutral"` | `"ok"`
+- `ciberseguridad.graphql_exposed` — boolean
+- `ciberseguridad.error_disclosure` — boolean
+- `tecnologia.generator` — string con nombre y versión exacta del generador
+- `tecnologia.vibe_coded` — boolean
+- `tecnologia.vibe_signals` — array de señales detectadas
+
+### Chore
+
+- Unificados `ROADMAP-GEO.md` y `ROADMAP-SECURITY.md` en `ROADMAP.md` con categorización por impacto en audit-platform.
+
+---
+
 ## [1.7.2] — junio 2026
 
 ### Corregido
