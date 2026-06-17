@@ -56,9 +56,12 @@
 
 ## 🔗 PLATFORM — Mejoras de UX en audit-platform
 
-| # | Ítem | Descripción |
-|---|------|-------------|
-| P1 | **Página de error** | Cuando un token no existe o la auditoría falla al cargar, mostrar página de error con diseño consistente en lugar del JSON crudo `{"error":"Auditoría no encontrada"}` |
+| # | Ítem | Descripción | Estado |
+|---|------|-------------|--------|
+| P1 | **Página de error** | Página 404/500 con diseño Homium en lugar de JSON crudo | ✅ Hecho |
+| P2 | **Claridad de datos — etiquetas de impacto (Opción A)** | Agregar badge `Riesgo activo` / `Oportunidad` / `Informativo` a cada fila del DETAIL según su flag (`crit/warn` → riesgo, `ok` → bien, `info` → contexto). El usuario sabe de un vistazo si el dato le importa hoy. | 🔜 |
+| P3 | **Claridad de datos — separar accionables vs contexto (Opción B)** | En cada sección DETAIL, mostrar primero "Requiere atención" (flags crit/warn) y colapsar el resto bajo "Datos de contexto". Reduce el ruido visual y prioriza lo que necesita acción. | 🔜 |
+| P4 | **Claridad de datos — consecuencia en lenguaje de negocio (Opción C)** | Debajo de cada fila crítica, una línea en lenguaje de negocio: "Sin HSTS — un visitante en WiFi pública puede ser interceptado sin saberlo". Requiere mapear consecuencias para ~20 elementos. | 📋 Backlog |
 
 ---
 
