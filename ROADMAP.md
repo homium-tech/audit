@@ -54,6 +54,14 @@
 
 ---
 
+## 🔗 PLATFORM — Mejoras de UX en audit-platform
+
+| # | Ítem | Descripción |
+|---|------|-------------|
+| P1 | **Página de error** | Cuando un token no existe o la auditoría falla al cargar, mostrar página de error con diseño consistente en lugar del JSON crudo `{"error":"Auditoría no encontrada"}` |
+
+---
+
 ## 🔬 ALTO ESFUERZO — Evaluar cuando el producto madure
 
 | # | Ítem | Por qué esperar |
