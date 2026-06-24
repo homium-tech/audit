@@ -3801,7 +3801,7 @@ _read_platform_config() {
     [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
     key="${key// /}"; val="${val// /}"
     case "$key" in
-      PLATFORM_URL)   PLATFORM_URL="$val"   ;;
+      PLATFORM_URL)   PLATFORM_URL="${val%/}" ;;
       PLATFORM_TOKEN) PLATFORM_TOKEN="$val" ;;
     esac
   done < "$PLATFORM_CONFIG"
