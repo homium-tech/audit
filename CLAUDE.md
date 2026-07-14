@@ -287,6 +287,24 @@ Los textos de brechas usan el formato: **`[nombre técnico]` — `[consecuencia 
 
 `SEC_HTTPS_REDIRECT` usa curl **sin `-L`** (`-ss` solo, sin follow-redirects) para capturar el código HTTP real de `http://${domain}`. Antes usaba `http_status()` que tiene `-L` incorporado y siempre devuelve el código final (200), haciendo imposible detectar el 301 intermedio.
 
+## Captura de screenshots (v1.11.1+)
+
+Método principal: captura directa con Chrome headless vía `_detect_chrome` (la misma detección cross-platform que usa Lighthouse), justo después de `run_lighthouse()` en `main()`:
+
+```bash
+_ss_chrome=$(_detect_chrome)
+"$_ss_chrome" --headless --disable-gpu --hide-scrollbars --no-sandbox \
+  --window-size=412,823 --force-device-scale-factor=1.75 \
+  --user-agent="...moto g power (2022)..." \
+  --screenshot="${OUTPUT_DIR}/screenshot-mobile-${SLUG}-${TIMESTAMP}.png" "$URL"
+```
+
+Mobile emula el Moto G Power (mismo device que Lighthouse Mobile: 412×823 CSS, DPR 1.75). Desktop usa 1350×940 sin UA custom. Ambos se guardan como PNG — sin la compresión que Lighthouse aplica a su thumbnail de reporte interno.
+
+**Fallback:** si Chrome no está disponible o la captura directa falla (UA bloqueado, sandbox restringido), cae al método anterior — extraer `full-page-screenshot` o `final-screenshot` del JSON de Lighthouse ya cacheado (`$LH_JSON_MOBILE` / `$LH_JSON_DESKTOP`). Este fallback solo corre si `SCREENSHOT_MOBILE`/`SCREENSHOT_DESKTOP` quedaron vacíos tras el intento directo.
+
+Las variables de salida (`SCREENSHOT_MOBILE`, `SCREENSHOT_DESKTOP`) son las mismas de antes — todo el código downstream (JSON, MD, upload `--upload`) no necesitó cambios.
+
 ## Integración con homium-audit-platform (v1.7.0+)
 
 El flag `--upload` sube el JSON + screenshots a la plataforma al finalizar. Requiere `~/.homium-audit.conf`:

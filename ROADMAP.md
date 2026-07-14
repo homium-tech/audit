@@ -59,9 +59,9 @@
 | # | Ítem | Descripción | Estado |
 |---|------|-------------|--------|
 | P1 | **Página de error** | Página 404/500 con diseño Homium en lugar de JSON crudo | ✅ Hecho |
-| P2 | **Claridad de datos — etiquetas de impacto (Opción A)** | Agregar badge `Riesgo activo` / `Oportunidad` / `Informativo` a cada fila del DETAIL según su flag (`crit/warn` → riesgo, `ok` → bien, `info` → contexto). El usuario sabe de un vistazo si el dato le importa hoy. | 🔜 |
-| P3 | **Claridad de datos — separar accionables vs contexto (Opción B)** | En cada sección DETAIL, mostrar primero "Requiere atención" (flags crit/warn) y colapsar el resto bajo "Datos de contexto". Reduce el ruido visual y prioriza lo que necesita acción. | 🔜 |
-| P4 | **Claridad de datos — consecuencia en lenguaje de negocio (Opción C)** | Debajo de cada fila crítica, una línea en lenguaje de negocio: "Sin HSTS — un visitante en WiFi pública puede ser interceptado sin saberlo". Requiere mapear consecuencias para ~20 elementos. | 📋 Backlog |
+| P2 | **Claridad de datos — badge de impacto** | Badge `Riesgo activo` (un solo color fijo) en cada fila del DETAIL con flag `crit`/`warn`. Se probó también un esquema de 3 badges (Riesgo activo/Oportunidad/Informativo) pero se descartó — "Oportunidad" repetido en casi todas las filas `ok` generaba ruido visual sin aportar. El resto de filas mantiene el punto de color de siempre. | ✅ Hecho (2026-07-14) |
+| P3 | **Claridad de datos — separar accionables vs contexto** | Cada card del DETAIL separa "Requiere atención" (flags crit/warn, siempre visible) de "Datos de contexto" (`<details>` colapsado). Si no hay riesgos, muestra `✓ Sin hallazgos que requieran atención`. | ✅ Hecho (2026-07-14) |
+| P4 | **Claridad de datos — consecuencia en lenguaje de negocio** | Debajo de cada fila de riesgo, una línea en lenguaje de negocio (ej. "Sin HSTS — un visitante en WiFi pública puede ser interceptado sin saberlo"). Mapa `DT_CONSEQUENCE` en `report.js`, ~60 hallazgos cubiertos (más de los ~20 estimados). | ✅ Hecho (2026-07-14) |
 
 ---
 
