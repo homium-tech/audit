@@ -3711,10 +3711,32 @@ main() {
   analyze_tecnologia
   analyze_legal
 
-  # Extraer screenshots de Lighthouse si están disponibles
+  # Screenshots — captura directa con Chrome headless (PNG nítido, sin la
+  # compresión que aplica Lighthouse a su thumbnail de reporte)
   SCREENSHOT_MOBILE=""; SCREENSHOT_DESKTOP=""
+  local _ss_chrome
+  _ss_chrome=$(_detect_chrome)
+  if [[ -n "$_ss_chrome" ]]; then
+    local _ss_mobile_file="${OUTPUT_DIR}/screenshot-mobile-${SLUG}-${TIMESTAMP}.png"
+    local _ss_desktop_file="${OUTPUT_DIR}/screenshot-desktop-${SLUG}-${TIMESTAMP}.png"
+
+    # Viewport + DPR + UA del Moto G Power, el mismo device que emula Lighthouse Mobile
+    _timeout 30 "$_ss_chrome" --headless --disable-gpu --hide-scrollbars --no-sandbox \
+      --window-size=412,823 --force-device-scale-factor=1.75 \
+      --user-agent="Mozilla/5.0 (Linux; Android 11; moto g power (2022)) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36" \
+      --screenshot="$_ss_mobile_file" "$URL" &>/dev/null
+    [[ -s "$_ss_mobile_file" ]] && SCREENSHOT_MOBILE="$_ss_mobile_file" && ok "Screenshot mobile guardado (alta calidad)"
+
+    _timeout 30 "$_ss_chrome" --headless --disable-gpu --hide-scrollbars --no-sandbox \
+      --window-size=1350,940 \
+      --screenshot="$_ss_desktop_file" "$URL" &>/dev/null
+    [[ -s "$_ss_desktop_file" ]] && SCREENSHOT_DESKTOP="$_ss_desktop_file" && ok "Screenshot desktop guardado (alta calidad)"
+  fi
+
+  # Fallback: extraer del reporte de Lighthouse si Chrome no está disponible
+  # o la captura directa falló (ej. sitio bloquea el UA o el sandbox del entorno)
   if command -v jq &>/dev/null; then
-    if [[ "$LH_DONE_MOBILE" == true && -f "$LH_JSON_MOBILE" ]]; then
+    if [[ -z "$SCREENSHOT_MOBILE" && "$LH_DONE_MOBILE" == true && -f "$LH_JSON_MOBILE" ]]; then
       local ss_data
       ss_data=$(jq -r '.audits["full-page-screenshot"].details.screenshot.data // ""' "$LH_JSON_MOBILE" 2>/dev/null || echo "")
       [[ -z "$ss_data" || "$ss_data" == "null" ]] && \
@@ -3723,10 +3745,10 @@ main() {
         local ss_file="${OUTPUT_DIR}/screenshot-mobile-${SLUG}-${TIMESTAMP}.webp"
         echo "$ss_data" | sed 's|^data:[^;]*;base64,||' | base64 -d > "$ss_file" 2>/dev/null \
           && SCREENSHOT_MOBILE="$ss_file" || true
-        [[ -n "$SCREENSHOT_MOBILE" ]] && ok "Screenshot mobile guardado" || true
+        [[ -n "$SCREENSHOT_MOBILE" ]] && ok "Screenshot mobile guardado (fallback Lighthouse)" || true
       fi
     fi
-    if [[ "$LH_DONE_DESKTOP" == true && -f "$LH_JSON_DESKTOP" ]]; then
+    if [[ -z "$SCREENSHOT_DESKTOP" && "$LH_DONE_DESKTOP" == true && -f "$LH_JSON_DESKTOP" ]]; then
       local ss_data
       ss_data=$(jq -r '.audits["full-page-screenshot"].details.screenshot.data // ""' "$LH_JSON_DESKTOP" 2>/dev/null || echo "")
       [[ -z "$ss_data" || "$ss_data" == "null" ]] && \
@@ -3735,7 +3757,7 @@ main() {
         local ss_file="${OUTPUT_DIR}/screenshot-desktop-${SLUG}-${TIMESTAMP}.webp"
         echo "$ss_data" | sed 's|^data:[^;]*;base64,||' | base64 -d > "$ss_file" 2>/dev/null \
           && SCREENSHOT_DESKTOP="$ss_file" || true
-        [[ -n "$SCREENSHOT_DESKTOP" ]] && ok "Screenshot desktop guardado" || true
+        [[ -n "$SCREENSHOT_DESKTOP" ]] && ok "Screenshot desktop guardado (fallback Lighthouse)" || true
       fi
     fi
   fi
