@@ -248,7 +248,11 @@ case "$OS_TYPE" in
     # Añadir ~/.local/bin al PATH si no está
     if ! echo "$PATH" | grep -q ".local/bin"; then
       for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
-        if [[ -f "$rc" ]] && ! grep -q ".local/bin" "$rc"; then
+        # No usar [[ -f "$rc" ]] como filtro: en un Mac recién configurado
+        # ~/.zshrc no existe por defecto, y eso hacía que el loop no
+        # escribiera en ningún lado, dejando el PATH sin actualizar.
+        touch "$rc" 2>/dev/null
+        if ! grep -q ".local/bin" "$rc" 2>/dev/null; then
           echo '' >> "$rc"
           echo '# homium-audit' >> "$rc"
           echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$rc"
