@@ -35,6 +35,18 @@ echo -e "${BOLD}${CYAN}║  github.com/${REPO}      ║${RESET}"
 echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════╝${RESET}"
 echo ""
 
+# ─── Guardia contra ejecución completa con sudo ──────────────────────────────
+# Si el script entero corre como root (sudo bash install.sh), $HOME se resuelve
+# a /root (env_reset en sudoers de Ubuntu/Debian) y todo se instala donde el
+# usuario real nunca lo verá ni tendrá en su PATH. El script ya usa sudo
+# puntualmente para apt-get; no debe invocarse con sudo por completo.
+if [[ "$EUID" -eq 0 ]] && [[ -n "${SUDO_USER:-}" ]]; then
+  err "No ejecutes este instalador completo con sudo."
+  err "El script pide sudo internamente solo cuando lo necesita (apt-get, etc.)."
+  echo -e "  ${YELLOW}Ejecuta en su lugar:${RESET} bash install.sh"
+  exit 1
+fi
+
 # ─── Info de entorno ─────────────────────────────────────────────────────────
 case "$OS_TYPE" in
   macos)
@@ -140,6 +152,20 @@ if command -v node &>/dev/null && command -v npm &>/dev/null; then
   ok "node $(node --version) + npm $(npm --version)"
 elif [[ "$OS_TYPE" == "windows" ]]; then
   warn "node/npm no encontrado — instala Node.js desde https://nodejs.org"
+elif [[ "$LINUX_PKG" == "apt" ]]; then
+  # apt-get install nodejs npm falla frecuentemente en Debian/Ubuntu: el paquete
+  # npm de los repos choca en archivos con el npm que ya trae nodejs moderno, y
+  # la versión de nodejs en los repos default suele ser vieja. NodeSource evita
+  # ambos problemas y es el método soportado oficialmente.
+  info "Instalando Node.js LTS vía NodeSource..."
+  if curl -fsSL https://deb.nodesource.com/setup_lts.x 2>/dev/null | sudo -E bash - &>/dev/null \
+      && sudo apt-get install -y nodejs -qq 2>/dev/null; then
+    ok "node $(node --version) + npm $(npm --version)"
+  else
+    warn "node/npm no disponible — Lighthouse no estará disponible"
+    echo -e "    Instala manualmente:"
+    echo -e "    curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt-get install -y nodejs"
+  fi
 else
   _install_pkg "node" "node" "nodejs npm" "nodejs npm" || warn "node/npm no disponible — Lighthouse no estará disponible"
 fi
