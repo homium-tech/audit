@@ -19,28 +19,13 @@
 | v1.9.0 | A1: CSP calidad (wildcard/nonce-bypass) · A3: TLS 1.0/1.1 · A4: SameSite cookies |
 | v1.9.0 | A5: Copilot/bingbot 5° motor · A6: Question headings · A7: dateModified · A8: JSON-LD completeness |
 | v1.9.0 | Platform: DMARC/SPF policy, GraphQL, error disclosure, CORS, API keys, Copilot engine, vibe coding |
+| v1.10.0 | GEO v2 restante — M7–M11: noai, citation patterns, llms.txt quality, definition sentences, ai-plugin.json |
+| v1.11.0 | Seguridad media — M3–M5: SRI ratio real, HSTS includeSubDomains+preload, MTA-STS |
+| v2.0.0 | Screenshots de alta calidad (Chrome headless) · instalador Linux reforzado (NodeSource, guardia anti-sudo, rc file) |
 
 ---
 
 ## 🔜 PENDIENTES
-
-### 🟠 Alta — GEO v2 restante (solo script, bajo esfuerzo, 0 requests)
-
-| # | Ítem | Campo JSON | Plataforma |
-|---|------|-----------|-----------|
-| M7 | **noai/noimageai detection** — `<meta name="robots" content="noai">` bloquea IA | `geo.acceso.meta_noai` | 🔗 |
-| M8 | **Citation patterns** — "según", "fuente:", "according to" en contenido | `geo.contenido.citation_patterns` | 🔗 |
-| M9 | **llms.txt quality** — calidad real del contenido (completo/parcial/vacío) ⚠️ campo nuevo, no cambiar tipo boolean | `geo.acceso.llms_txt_quality` | 🔗 |
-| M10 | **Definition sentences** — "X es Y", "X se define como" | `geo.contenido.definition_patterns` | 🔗 |
-| M11 | **ai-plugin.json** — `/.well-known/ai-plugin.json` → +10pts ChatGPT | `geo.acceso.ai_plugin` | 🔗 |
-
-### 🟡 Media — Seguridad complementaria
-
-| # | Ítem | Campo JSON | Plataforma |
-|---|------|-----------|-----------|
-| M3 | **Scripts sin SRI — ratio real** — hoy es solo boolean | `seguridad.sri_count`, `sri_missing_count` | 🔗 |
-| M4 | **HSTS includeSubDomains + preload** | `seguridad.headers.hsts_preload`, `hsts_subdomains` | 🔗 |
-| M5 | **MTA-STS** — TLS forzado en email entrante | `ciberseguridad.mta_sts` | 🔗 |
 
 ### ⚪ Baja — Informativo
 
@@ -81,6 +66,7 @@
 |---------|--------|-----------|
 | v1.8.1 | ✅ Producción | 16 fixes solo script + bugs narrative |
 | v1.9.0 | ✅ Producción | CORS, API keys, CSP/TLS/SameSite, GEO v2 (Copilot, dateModified, question headings, JSON-LD) |
-| v1.10.0 | 🔜 Próxima | GEO v2 restante: M7–M11 (noai, citation patterns, llms.txt quality, definition sentences, ai-plugin) |
-| v1.11.0 | Planificado | Seguridad media: M3–M5 (SRI ratio, HSTS flags, MTA-STS) |
-| v2.0.0 | Futuro | E1–E3 alto esfuerzo |
+| v1.10.0 | ✅ Producción | GEO v2 restante: M7–M11 (noai, citation patterns, llms.txt quality, definition sentences, ai-plugin) |
+| v1.11.0 | ✅ Producción | Seguridad media: M3–M5 (SRI ratio, HSTS flags, MTA-STS) |
+| v2.0.0 | ✅ Producción | Screenshots de alta calidad + instalador Linux reforzado (NodeSource, guardia anti-sudo) |
+| v3.0.0 | Futuro | E1–E3 alto esfuerzo (ver sección anterior) |

@@ -6,6 +6,27 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
 ---
 
+## [2.0.0] — agosto 2026
+
+Consolida GEO v2, seguridad complementaria, screenshots de alta calidad y un instalador más robusto en Linux. Sin cambios de schema que rompan compatibilidad con audit-platform — el bump a mayor marca el hito de estabilidad de las 9 dimensiones, no un cambio incompatible.
+
+### Agregado
+
+- **Screenshots de alta calidad** — captura directa con Chrome headless (PNG, mobile 412×823@1.75x emulando Moto G Power, desktop 1350×940), reemplaza el thumbnail comprimido de Lighthouse como método principal. Lighthouse queda como fallback si Chrome no está disponible.
+
+### Corregido — instalador (install.sh)
+
+- **Node.js vía NodeSource en Debian/Ubuntu** — `apt-get install nodejs npm` fallaba con frecuencia por choque de archivos entre paquetes y versiones viejas en los repos default. Ahora usa el script de NodeSource, el método soportado oficialmente.
+- **Guardia contra `sudo bash install.sh` completo** — ejecutar el instalador entero como root resuelve `$HOME` a `/root` (env_reset de sudoers) y deja el symlink y el PATH configurados donde el usuario real nunca los ve. El instalador ahora aborta con instrucciones si detecta esto.
+- **Creación de rc file si no existe** al configurar el PATH.
+
+### Incluye (ya en 1.10.0 y 1.11.0)
+
+- GEO v2 completo — noai/noimageai, citation patterns, calidad real de llms.txt, definition sentences, ai-plugin.json.
+- Seguridad complementaria — SRI ratio real, HSTS includeSubDomains+preload, MTA-STS.
+
+---
+
 ## [1.11.0] — junio 2026
 
 ### Agregado — Seguridad complementaria
