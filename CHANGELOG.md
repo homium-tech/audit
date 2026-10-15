@@ -21,10 +21,14 @@ Surgen de la revisión módulo a módulo del informe en audit-platform. Detalle 
 - **Páginas anti-bots analizadas como el sitio** — se detectan (Akamai, Cloudflare, DataDome, Incapsula, PerimeterX); si curl y Chrome están bloqueados, Legal es "no verificable".
 - WHOIS con dominio registrable · IPv6 real · DNSSEC · `ssl.expires` · axe vía Lighthouse (el CLI fallaba siempre) · pa11y acepta exit 2 · sin penalización SSL ≤ 90 días.
 - GEO: llms.txt y ai-plugin fuera del puntaje; el índice solo resta por señales con respaldo; hallazgos GEO con títulos y severidades honestos.
+- **Privacidad WHOIS** — registros que no publican al titular ("Please query the RDDS service…", .co, .com tras GDPR) salían como "Datos expuestos". Ahora: expuestos solo si aparecen datos del titular; sin datos ni aviso → `null` (no verificable).
+- **Redes sociales en el sitio (GEO)** — siempre `false`: `analyze_geo` corre antes que `analyze_ux` y leía `UX_SOCIAL` vacío. Ahora se detecta en GEO.
+- **Reporte MD roto en macOS** — `case … in valor)` dentro de `$(…)` falla en bash 3.2 (filas de privacidad, cookies y DKIM); se usa la forma `(valor)`.
 
 ### JSON
 - `legal.dom_rendered`, `legal.blocked` (nuevos); `legal.privacy_policy` / `legal.terms` pueden ser `null` (no verificable); `legal.trackers` ya no incluye Google Tag Manager.
 - `email_deliverability.dkim` puede ser `null` (no verificable).
+- `dominio.whois_privacy` puede ser `null` (no verificable).
 - Hallazgo `cookie_consent` sin aviso: "No se detectó aviso de cookies y hay trackers activos".
 
 ### Notas

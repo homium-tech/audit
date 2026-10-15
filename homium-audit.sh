@@ -512,7 +512,16 @@ lookup_hosting_domain() {
       # Quitar URL ICANN que sigue al código de estado (ej: "clientDeleteProhibited https://...")
       SEC_DOM_STATUS=$(echo "$w" | grep -iE "domain status:" | head -3 | sed 's/.*[Dd]omain [Ss]tatus:[[:space:]]*//' | sed 's/[[:space:]].*//' | tr '\n' '·' | sed 's/·$//' | xargs || echo "Desconocido")
       SEC_DOM_ABUSE_EMAIL=$(echo "$w" | grep -iE "registrar abuse contact email" | head -1 | sed 's/.*:[[:space:]]*//' | xargs || echo "Desconocido")
-      echo "$w" | grep -qiE "privacy|redacted|protected|proxy" && SEC_DOM_PRIVACY=true || true
+      # Privacidad: "expuestos" solo si el WHOIS muestra datos reales del titular. Muchos registros
+      # (.co, .com tras GDPR) no publican el titular ("Please query the RDDS service…"): antes eso
+      # contaba como "datos expuestos" por no encontrar la palabra "privacy".
+      if echo "$w" | grep -qiE "privacy|redacted|protected|proxy|please query the rdds|not disclosed|withheld"; then
+        SEC_DOM_PRIVACY=true
+      elif echo "$w" | grep -qiE '^[[:space:]]*registrant[[:space:]]+(name|organi[sz]ation|email|street|phone)[[:space:]]*:[[:space:]]*[^[:space:]]'; then
+        SEC_DOM_PRIVACY=false
+      else
+        SEC_DOM_PRIVACY=null    # el WHOIS no trae datos del titular ni aviso de protección
+      fi
       echo "$w" | grep -qiE "dnssec:[[:space:]]*(signed|yes)|signedDelegation" && SEC_DOM_DNSSEC=true || SEC_DOM_DNSSEC=false
       [[ -z "$SEC_DOM_REGISTRAR"   ]] && SEC_DOM_REGISTRAR="Desconocido"
       [[ -z "$SEC_DOM_CREATED"     ]] && SEC_DOM_CREATED="Desconocido"
@@ -1377,7 +1386,10 @@ analyze_geo() {
   grep -qiE 'itemprop="datePublished|dateModified"' <<< "$html" && GEO_DATE_VISIBLE=true
 
   # Social links (reuse UX var)
-  GEO_SOCIAL_LINKS="${UX_SOCIAL:-false}"
+  # analyze_geo corre antes que analyze_ux: UX_SOCIAL aún no existe aquí (siempre salía false).
+  # Misma detección que UX, sobre el HTML.
+  GEO_SOCIAL_LINKS=false
+  grep -qiE 'twitter\.com|x\.com/[a-zA-Z]|linkedin\.com|instagram\.com|facebook\.com' <<< "$html" && GEO_SOCIAL_LINKS=true || true
 
   # Structured content ratio
   local _li_count _table_count
@@ -2389,7 +2401,7 @@ $([ "${ACC_PA11Y_ERRORS:-0}" -gt 0 ] && echo "| pa11y errores | ⚠️ ${ACC_PA1
 | **Dominio expira** | ${SEC_DOM_EXPIRES:-Desconocido} ${SEC_DOM_EXPIRY_NOTE:+— $SEC_DOM_EXPIRY_NOTE} |
 | **Última actualización** | ${SEC_DOM_UPDATED:-Desconocido} |
 | **Nameservers** | \`${SEC_DOM_NAMESERVERS:-Desconocido}\` |
-| **Privacidad WHOIS** | $([ "$SEC_DOM_PRIVACY" == "true" ] && echo "✅ Activada" || echo "⚠️ Datos expuestos") |
+| **Privacidad WHOIS** | $(case "$SEC_DOM_PRIVACY" in (true) echo "✅ Protegida";; (null) echo "— No verificable";; (*) echo "⚠️ Datos expuestos";; esac) |
 | **CAA Record** | $([ "${SEC_CAA:-AUSENTE}" != "AUSENTE" ] && echo "✅ ${SEC_CAA:0:50}" || echo "⚠️ AUSENTE") |
 | **MX Record** | $([ "${SEC_MX:-AUSENTE}" != "AUSENTE" ] && echo "✅ Configurado" || echo "⚠️ AUSENTE") |
 
@@ -2420,7 +2432,7 @@ $([ -n "${SEC_SSLCHECK_RESULT:-}" ] && echo "| ssl-checker | \`${SEC_SSLCHECK_RE
 | Cookies HttpOnly                 | $([ "$SEC_COOKIE_HTTPONLY" == "true" ] && echo "✅" || echo "⚠️") | 🟠 Alto |
 
 **💡 Recomendaciones:**
-- $([ "$SEC_DOM_PRIVACY" != "true" ] && echo "🟡 Activar privacidad WHOIS en el registrador" || echo "Privacidad WHOIS activa ✓")
+- $([ "$SEC_DOM_PRIVACY" == "false" ] && echo "🟡 Activar privacidad WHOIS en el registrador" || echo "Privacidad WHOIS: sin datos del titular expuestos ✓")
 - $([ "$SEC_HSTS" != "true" ] && echo "🔴 CRÍTICO: \`Strict-Transport-Security: max-age=31536000; includeSubDomains\`" || echo "HSTS configurado ✓")
 - $([ "$SEC_CSP"  != "true" ] && echo "🔴 CRÍTICO: Configurar Content-Security-Policy para prevenir XSS" || echo "CSP configurado ✓")
 - $([ "$SEC_XCTO" != "true" ] && echo "🟠 ALTO: \`X-Content-Type-Options: nosniff\`" || echo "X-Content-Type-Options ✓")
@@ -2557,7 +2569,7 @@ echo "| Mecanismo | Estado | Valor |"
 echo "|-----------|--------|-------|"
 echo "| SPF | $([ "$spf_ok" == "true" ] && echo "✅" || echo "🔴 AUSENTE") | \`${CYBER_SPF:0:60}\` |"
 echo "| DMARC | $([ "$dmarc_ok" == "true" ] && echo "✅" || echo "🔴 AUSENTE") | \`${CYBER_DMARC:0:60}\` |"
-echo "| DKIM | $(case "$dkim_ok" in true) echo "✅";; null) echo "➖ No verificable (selector no público)";; *) echo "🟠 AUSENTE";; esac) | — |"
+echo "| DKIM | $(case "$dkim_ok" in (true) echo "✅";; (null) echo "➖ No verificable (selector no público)";; (*) echo "🟠 AUSENTE";; esac) | — |"
 echo "| MX Records | $([ "$mx_ok" == "true" ] && echo "✅" || echo "🟡 AUSENTE") | \`${SEC_MX:0:50}\` |"
 echo "| BIMI | $([ "$bimi_ok" == "true" ] && echo "✅ Activo" || echo "➖ No configurado") | — |"
 echo ""
@@ -2574,9 +2586,9 @@ fi
 
 | Elemento | Estado | Riesgo |
 |----------|--------|--------|
-| Política de Privacidad | $(case "$LEGAL_PRIVACY" in true) echo "✅";; null) echo "— No verificable";; *) echo "❌";; esac) | $([ "$LEGAL_PRIVACY" == "false" ] && echo "🔴 GDPR Art.13" || echo "—") |
-| Términos de Uso | $(case "$LEGAL_TERMS" in true) echo "✅";; null) echo "— No verificable";; *) echo "⚠️";; esac) | $([ "$LEGAL_TERMS" == "false" ] && echo "🟡 Medio" || echo "—") |
-| Aviso de cookies | $(case "$LEGAL_COOKIE_BANNER" in cmp) echo "✅ Plataforma de consentimiento";; aviso) echo "⚠️ Aviso informativo$([ "$LEGAL_COOKIE_REJECT" == false ] && echo " (sin opción de rechazo)")";; *) echo "❌ No detectado";; esac) | $([ "$LEGAL_COOKIE_RISK" == true ] && echo "🟠 Trackers antes del consentimiento" || echo "✅ OK") |
+| Política de Privacidad | $(case "$LEGAL_PRIVACY" in (true) echo "✅";; (null) echo "— No verificable";; (*) echo "❌";; esac) | $([ "$LEGAL_PRIVACY" == "false" ] && echo "🔴 GDPR Art.13" || echo "—") |
+| Términos de Uso | $(case "$LEGAL_TERMS" in (true) echo "✅";; (null) echo "— No verificable";; (*) echo "⚠️";; esac) | $([ "$LEGAL_TERMS" == "false" ] && echo "🟡 Medio" || echo "—") |
+| Aviso de cookies | $(case "$LEGAL_COOKIE_BANNER" in (cmp) echo "✅ Plataforma de consentimiento";; (aviso) echo "⚠️ Aviso informativo$([ "$LEGAL_COOKIE_REJECT" == false ] && echo " (sin opción de rechazo)")";; (*) [[ "${LEGAL_TRACKERS[0]:-Ninguno detectado}" == "Ninguno detectado" ]] && echo "➖ No detectado (sin trackers)" || echo "❌ No detectado";; esac) | $([ "$LEGAL_COOKIE_RISK" == true ] && echo "🟠 Trackers antes del consentimiento" || echo "✅ OK") |
 | Trackers detectados | — | ${LEGAL_TRACKERS[*]} |
 
 $([ "$LEGAL_BLOCKED" == "true" ] && echo "> El sitio bloqueó el acceso automatizado: esta sección no es verificable." && exit; [ "$LEGAL_PRIVACY" == "false" ] || [ "$LEGAL_COOKIE_RISK" == "true" ] && echo "⚠️ **Riesgo legal detectado.** Las leyes de protección de datos (GDPR para visitantes de la UE, Ley 1581 en Colombia y equivalentes en LATAM) exigen informar y, en varios casos, pedir consentimiento previo." || echo "✅ Señales positivas de cumplimiento.")
@@ -2785,7 +2797,7 @@ fi)
 
 **⚙️ DevOps:** Headers de seguridad: **$([ $SCORE_SEGURIDAD -ge 70 ] && echo "aceptables" || echo "críticos")**. Hosting en **${SEC_HOST_PROVIDER:-desconocido}** (${SEC_HOST_COUNTRY:-?}). $([ "$SEC_HSTS" == "true" ] && echo "HSTS configurado ✓." || echo "HSTS ausente — vulnerabilidad MITM.")
 
-**🔏 Privacidad:** $(case "$LEGAL_PRIVACY" in true) echo "Política de privacidad detectada.";; null) echo "No verificable (el sitio bloqueó el análisis).";; *) echo "⚠️ Sin política de privacidad — riesgo GDPR.";; esac) Trackers: **${LEGAL_TRACKERS[*]}**. Verificar consentimiento explícito (GDPR Art. 6).
+**🔏 Privacidad:** $(case "$LEGAL_PRIVACY" in (true) echo "Política de privacidad detectada.";; (null) echo "No verificable (el sitio bloqueó el análisis).";; (*) echo "⚠️ Sin política de privacidad — riesgo GDPR.";; esac) Trackers: **${LEGAL_TRACKERS[*]}**. Verificar consentimiento explícito (GDPR Art. 6).
 
 **💰 CRO:** $([ "$UX_CTA" == "true" ] && echo "CTAs presentes." || echo "Sin CTAs claros — pérdida de conversión directa.") Priorizar A/B testing en páginas de alto tráfico.
 
@@ -3657,7 +3669,7 @@ generate_json() {
     "created": "$(_je "${SEC_DOM_CREATED:-}")", "expires": "$(_je "${SEC_DOM_EXPIRES:-}")",
     "updated": "$(_je "${SEC_DOM_UPDATED:-}")", "nameservers": ${json_nameservers},
     "dnssec": $(_jb "${SEC_DOM_DNSSEC:-false}"), "status": "$(_je "${SEC_DOM_STATUS:-Desconocido}")",
-    "whois_privacy": $(_jb "${SEC_DOM_PRIVACY:-false}"), "abuse_email": "$(_je "${SEC_DOM_ABUSE_EMAIL:-Desconocido}")"
+    "whois_privacy": $([[ "${SEC_DOM_PRIVACY:-false}" == null ]] && printf null || _jb "${SEC_DOM_PRIVACY:-false}"), "abuse_email": "$(_je "${SEC_DOM_ABUSE_EMAIL:-Desconocido}")"
   },
   "screenshots": { "mobile": ${json_ss_mobile}, "desktop": ${json_ss_desktop} },
   "findings": {
