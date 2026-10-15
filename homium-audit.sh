@@ -2,7 +2,7 @@
 # =============================================================================
 # homium-audit — Web Audit Tool for Claude Code
 # Repo: homium-tech/audit
-# Version: 2.0.1
+# Version: 2.1.0
 # =============================================================================
 
 # Sin flags estrictos: compatibilidad macOS/Linux (BSD/GNU)
@@ -55,7 +55,7 @@ HTMLHINT_CMD=$(resolve_cmd "htmlhint" "htmlhint")
 SSLCHECK_CMD=$(resolve_cmd "ssl-checker" "ssl-checker")
 
 # ─── Usage ───────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="2.0.1"
+SCRIPT_VERSION="2.1.0"
 
 usage() {
   echo -e "${BOLD}homium-audit${RESET} v${SCRIPT_VERSION} — Auditoría profesional de sitios web"

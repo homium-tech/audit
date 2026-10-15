@@ -6,10 +6,12 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
 ---
 
-## [2.0.2] — sin release (cambios acumulados al 2026-10-15)
+## [2.1.0] — octubre 2026
 
 Surgen de la revisión módulo a módulo del informe en audit-platform. Detalle y motivos en
-`audit-platform/docs/revision-informe-completo.md`. Pendiente: bump de `SCRIPT_VERSION` (y `VERSION` en `install.sh`), README.
+`audit-platform/docs/revision-informe-completo.md`. Versión menor (no parche): el JSON trae campos
+nuevos y campos que ahora pueden ser `null`, y los puntajes cambian respecto de 2.0.x (correo, GEO,
+DKIM) — las comparaciones contra auditorías anteriores pueden reflejar el cambio de método.
 
 ### Corregido
 
