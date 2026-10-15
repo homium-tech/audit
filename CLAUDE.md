@@ -206,6 +206,10 @@ _at3() { ... }
 ```
 **No usar `eval` para acumular strings** — rompe silenciosamente cuando el string contiene comillas dobles.
 
+> Desde 2026-10-15 audit-platform **no usa** `sprint_plan`, `perspectives` ni `evolution` (los calcula ella
+> desde los hallazgos y la DB) y reescribe los fragmentos de `correction_guide` de HSTS, CSP y correo.
+> Siguen en el JSON por compatibilidad y para el MD.
+
 ### Cadena de fallbacks para herramientas externas
 
 Cada herramienta opcional tiene un fallback:
@@ -328,6 +332,10 @@ Docs completas: `INTEGRATION.md` en el repo de la plataforma.
 - `TECH_WEBANALYZE` solo se llena si `webanalyze` está instalado globalmente — no tiene fallback `npx`.
 
 ## Notas de implementación
+
+- **Correo:** SPF/DMARC/BIMI/MX/MTA-STS se consultan en `_registrable_domain "$domain"`, nunca en el host auditado (www). DKIM prueba selectores comunes; sin respuesta → `CYBER_DKIM="No verificable"` (no resta, JSON `dkim: null`).
+- **Legal:** combina `HTML_CACHE` con la página cargada en Chrome (`--dump-dom`) — excepción a "sin requests extra": los banners de cookies y lo que inyecta GTM no están en el HTML estático. Páginas anti-bots se descartan (`LEGAL_BLOCKED`).
+- **"No verificable" ≠ "ausente":** si un dato no se puede comprobar, se emite `null` y no resta puntos. Afirmar una ausencia que no se midió genera hallazgos falsos frente al cliente.
 
 - El flag `--dimensions` está implementado: `should_run()` en línea ~118 filtra qué `analyze_*` corren. El nombre de la dimensión para calidad técnica es `calidad` (no `calidad_tecnica`).
 - La columna Δ en la tabla de evolución del MD calcula el delta real vía `score_delta()` cuando existe un reporte anterior (`PREV_REPORT`). Si no hay reporte previo, muestra `—`.

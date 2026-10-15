@@ -6,6 +6,32 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
 ---
 
+## [2.0.2] — sin release (cambios acumulados al 2026-10-15)
+
+Surgen de la revisión módulo a módulo del informe en audit-platform. Detalle y motivos en
+`audit-platform/docs/revision-informe-completo.md`. Pendiente: bump de `SCRIPT_VERSION` (y `VERSION` en `install.sh`), README.
+
+### Corregido
+
+- **Correo consultado en el host auditado** — SPF, DMARC, BIMI, MX y MTA-STS se buscaban en `www.x.com`; ahora en el dominio registrable (`_registrable_domain`). DMARC salía falso "ausente" en 8 de 11 dominios de producción auditados con www.
+- **MX falso positivo por CNAME** — `dig +short MX` sobre un alias devuelve el destino del alias; ahora solo cuentan líneas `prioridad host`.
+- **DKIM solo probaba el selector `default`** — se prueban 17 selectores comunes (Google, Microsoft 365, Zoho, SendGrid, SES…). Sin respuesta queda "No verificable" y no resta puntos (antes −5 Ciberseguridad y −25 correo en casi todos los sitios).
+- **Aviso de cookies no detectado** — banners inyectados por JavaScript (hilton, betobee, crowe) y frases no contempladas (portafolio). Legal analiza también la página cargada en Chrome (`--dump-dom`, +2–16 s típico, tope 45 s), más plataformas de consentimiento (TrustArc, Clarip, HubSpot, CookieAdmin…) y frases. Medido en 22 sitios: de 7 a 11 avisos detectados.
+- **Google Tag Manager contado como tracker** — es un contenedor; con la página cargada se ve lo que inyecta. Solo GTM sin página cargada → carga antes del consentimiento "no verificable".
+- **Páginas anti-bots analizadas como el sitio** — se detectan (Akamai, Cloudflare, DataDome, Incapsula, PerimeterX); si curl y Chrome están bloqueados, Legal es "no verificable".
+- WHOIS con dominio registrable · IPv6 real · DNSSEC · `ssl.expires` · axe vía Lighthouse (el CLI fallaba siempre) · pa11y acepta exit 2 · sin penalización SSL ≤ 90 días.
+- GEO: llms.txt y ai-plugin fuera del puntaje; el índice solo resta por señales con respaldo; hallazgos GEO con títulos y severidades honestos.
+
+### JSON
+- `legal.dom_rendered`, `legal.blocked` (nuevos); `legal.privacy_policy` / `legal.terms` pueden ser `null` (no verificable); `legal.trackers` ya no incluye Google Tag Manager.
+- `email_deliverability.dkim` puede ser `null` (no verificable).
+- Hallazgo `cookie_consent` sin aviso: "No se detectó aviso de cookies y hay trackers activos".
+
+### Notas
+- audit-platform ya no usa `sprint_plan`, `perspectives` ni `evolution` del JSON, y reescribe los fragmentos de `correction_guide` para HSTS, CSP y correo. Se siguen generando por compatibilidad y para el reporte MD.
+
+---
+
 ## [2.0.1] — octubre 2026
 
 ### Corregido

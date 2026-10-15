@@ -49,7 +49,7 @@ resolve_cmd() {
 }
 
 LH_CMD=$(resolve_cmd "lighthouse" "lighthouse")
-AXE_CMD=$(resolve_cmd "axe" "@axe-core/cli")
+AXE_CMD=""  # axe CLI reemplazado por los resultados de axe dentro de Lighthouse
 PA11Y_CMD=$(resolve_cmd "pa11y" "pa11y")
 HTMLHINT_CMD=$(resolve_cmd "htmlhint" "htmlhint")
 SSLCHECK_CMD=$(resolve_cmd "ssl-checker" "ssl-checker")
@@ -254,6 +254,9 @@ ssl_full_info() {
     if [[ -n "$exp_epoch" ]]; then
       now_epoch=$(date +%s)
       SSL_DAYS_LEFT=$(( (exp_epoch - now_epoch) / 86400 ))
+      # Fecha absoluta (YYYY-MM-DD): los días restantes solo valen a la fecha del escaneo
+      SSL_EXPIRES_ISO=$(date -u -r "$exp_epoch" +%Y-%m-%d 2>/dev/null \
+        || date -u -d "@$exp_epoch" +%Y-%m-%d 2>/dev/null) || SSL_EXPIRES_ISO=""
     else
       SSL_DAYS_LEFT=-1
     fi
@@ -379,7 +382,6 @@ check_dependencies() {
     command -v "$t" &>/dev/null && ok "$t" || { missing+=("$t"); err "$t (requerido)"; }
   done
   [[ -n "$LH_CMD"       ]] && ok "lighthouse ($LH_CMD)"         || warn "lighthouse — npm i -g lighthouse"
-  [[ -n "$AXE_CMD"      ]] && ok "axe-core ($AXE_CMD)"          || warn "@axe-core/cli — npm i -g @axe-core/cli"
   [[ -n "$PA11Y_CMD"    ]] && ok "pa11y ($PA11Y_CMD)"           || warn "pa11y — npm i -g pa11y"
   [[ -n "$HTMLHINT_CMD" ]] && ok "htmlhint ($HTMLHINT_CMD)"     || warn "htmlhint — npm i -g htmlhint"
   [[ -n "$SSLCHECK_CMD" ]] && ok "ssl-checker ($SSLCHECK_CMD)"  || warn "ssl-checker — npm i -g ssl-checker"
@@ -389,6 +391,20 @@ check_dependencies() {
 }
 
 # ─── Hosting & Domain ─────────────────────────────────────────────────────────
+# Dominio registrable para WHOIS/RDAP: www.x.com → x.com, apps.x.com.co → x.com.co
+# (WHOIS de un subdominio no devuelve el registro y todo quedaba "Desconocido")
+_registrable_domain() {
+  local d; d=$(tr "[:upper:]" "[:lower:]" <<< "$1"); d="${d%.}"
+  local n; n=$(awk -F. '{print NF}' <<< "$d")
+  # Segundo nivel genérico bajo ccTLD (com.co, co.uk, gov.co, org.mx…) → 3 etiquetas
+  if [[ "$d" =~ \.(com|net|org|gov|gob|edu|co|ac|mil|nom)\.[a-z]{2}$ ]]; then
+    (( n > 3 )) && d=$(awk -F. '{print $(NF-2)"."$(NF-1)"."$NF}' <<< "$d")
+  else
+    (( n > 2 )) && d=$(awk -F. '{print $(NF-1)"."$NF}' <<< "$d")
+  fi
+  printf '%s' "$d"
+}
+
 lookup_hosting_domain() {
   local domain="$1"
   info "Resolviendo IP y hosting..."
@@ -461,14 +477,14 @@ lookup_hosting_domain() {
   SEC_DOM_EXPIRY_NOTE=""; SEC_DOM_DAYS_LEFT=-1
 
   # whois → RDAP API fallback (rdap.org — funciona en Git Bash/Windows)
+  local wdomain; wdomain=$(_registrable_domain "$domain")
   local w=""
   if command -v whois &>/dev/null; then
-    w=$(whois "$domain" 2>/dev/null | head -120) || w=""
+    w=$(whois "$wdomain" 2>/dev/null | head -120) || w=""
   fi
   if [[ -z "$w" ]]; then
-    local rdap_tld="${domain##*.}"
     local rdap_json
-    rdap_json=$(curl -sSL --max-time 15       "https://rdap.org/domain/${domain}" 2>/dev/null) || rdap_json=""
+    rdap_json=$(curl -sSL --max-time 15       "https://rdap.org/domain/${wdomain}" 2>/dev/null) || rdap_json=""
     if [[ -n "$rdap_json" ]]; then
       local reg_name
       reg_name=$(echo "$rdap_json" | perl -nle 'print $1 if /"fn":"([^"]+)"/' | head -1 || echo "")
@@ -497,7 +513,7 @@ lookup_hosting_domain() {
       SEC_DOM_STATUS=$(echo "$w" | grep -iE "domain status:" | head -3 | sed 's/.*[Dd]omain [Ss]tatus:[[:space:]]*//' | sed 's/[[:space:]].*//' | tr '\n' '·' | sed 's/·$//' | xargs || echo "Desconocido")
       SEC_DOM_ABUSE_EMAIL=$(echo "$w" | grep -iE "registrar abuse contact email" | head -1 | sed 's/.*:[[:space:]]*//' | xargs || echo "Desconocido")
       echo "$w" | grep -qiE "privacy|redacted|protected|proxy" && SEC_DOM_PRIVACY=true || true
-      echo "$w" | grep -qiE "dnssec.*signed|signedDelegation" && SEC_DOM_DNSSEC=true || SEC_DOM_DNSSEC=false
+      echo "$w" | grep -qiE "dnssec:[[:space:]]*(signed|yes)|signedDelegation" && SEC_DOM_DNSSEC=true || SEC_DOM_DNSSEC=false
       [[ -z "$SEC_DOM_REGISTRAR"   ]] && SEC_DOM_REGISTRAR="Desconocido"
       [[ -z "$SEC_DOM_CREATED"     ]] && SEC_DOM_CREATED="Desconocido"
       [[ -z "$SEC_DOM_EXPIRES"     ]] && SEC_DOM_EXPIRES="Desconocido"
@@ -812,24 +828,28 @@ analyze_accesibilidad() {
     score=$(( (score + ACC_LH_DESKTOP) / 2 ))
   fi
 
-  ACC_AXE_VIOLATIONS=0; ACC_AXE_SERIOUS=0
-  if [[ -n "$AXE_CMD" ]]; then
-    info "Ejecutando axe-core..."
-    local axe_out="${TMPDIR_AUDIT}/axe.json"
-    if $AXE_CMD "$URL" --save "$axe_out" --quiet 2>/dev/null && command -v jq &>/dev/null && [[ -f "$axe_out" ]]; then
-      ACC_AXE_VIOLATIONS=$(jq '[.violations[].nodes[]]|length'                                                           "$axe_out" 2>/dev/null || echo 0)
-      ACC_AXE_SERIOUS=$(jq    '[.violations[]|select(.impact=="serious" or .impact=="critical")|.nodes[]]|length'        "$axe_out" 2>/dev/null || echo 0)
-      ACC_AXE_VIOLATIONS=${ACC_AXE_VIOLATIONS:-0}; ACC_AXE_SERIOUS=${ACC_AXE_SERIOUS:-0}
-      local pen=$(( ACC_AXE_SERIOUS * 3 )); (( pen > 20 )) && pen=20
-      (( ACC_AXE_SERIOUS > 0 )) && score=$((score - pen)) || true
-    fi
+  # Fallas de accesibilidad desde Lighthouse (corre axe-core internamente).
+  # El axe CLI fallaba siempre: --quiet no existe y exige un ChromeDriver de la misma versión
+  # que Chrome — reportaba 0 violaciones en todas las auditorías. Sin penalización extra:
+  # el puntaje de Lighthouse ya está promediado arriba.
+  ACC_AXE_VIOLATIONS=0; ACC_AXE_SERIOUS=0; ACC_LH_FAILED="[]"
+  if [[ -f "$LH_JSON_MOBILE" ]] && command -v jq &>/dev/null; then
+    ACC_LH_FAILED=$(jq -c '. as $r | [ $r.categories.accessibility.auditRefs[] | select(.weight > 0)
+      | $r.audits[.id] | select(.score == 0)
+      | { id, title, items: ((.details.items // []) | length) } ]' "$LH_JSON_MOBILE" 2>/dev/null) || ACC_LH_FAILED="[]"
+    [[ -z "$ACC_LH_FAILED" ]] && ACC_LH_FAILED="[]"
+    ACC_AXE_SERIOUS=$(jq 'length' <<< "$ACC_LH_FAILED" 2>/dev/null || echo 0)               # controles que fallan
+    ACC_AXE_VIOLATIONS=$(jq '[.[].items] | add // 0' <<< "$ACC_LH_FAILED" 2>/dev/null || echo 0) # elementos afectados
   fi
 
-  ACC_PA11Y_ERRORS=0; ACC_PA11Y_WARNINGS=0
+  ACC_PA11Y_ERRORS=0; ACC_PA11Y_WARNINGS=0; ACC_PA11Y_RAN=false
   if [[ -n "$PA11Y_CMD" ]]; then
     info "Ejecutando pa11y..."
-    local pa11y_out="${TMPDIR_AUDIT}/pa11y.json"
-    if $PA11Y_CMD "$URL" --reporter json > "$pa11y_out" 2>/dev/null && command -v jq &>/dev/null && [[ -f "$pa11y_out" ]]; then
+    local pa11y_out="${TMPDIR_AUDIT}/pa11y-out.json" _pa11y_rc=0
+    # pa11y sale con 2 cuando encuentra problemas — eso no es un fallo de ejecución
+    $PA11Y_CMD "$URL" --reporter json > "$pa11y_out" 2>/dev/null || _pa11y_rc=$?
+    if (( _pa11y_rc == 0 || _pa11y_rc == 2 )) && command -v jq &>/dev/null && jq -e 'type == "array"' "$pa11y_out" &>/dev/null; then
+      ACC_PA11Y_RAN=true
       ACC_PA11Y_ERRORS=$(jq   '[.[]|select(.type=="error")]  |length' "$pa11y_out" 2>/dev/null || echo 0)
       ACC_PA11Y_WARNINGS=$(jq '[.[]|select(.type=="warning")]|length' "$pa11y_out" 2>/dev/null || echo 0)
       ACC_PA11Y_ERRORS=${ACC_PA11Y_ERRORS:-0}; ACC_PA11Y_WARNINGS=${ACC_PA11Y_WARNINGS:-0}
@@ -856,10 +876,11 @@ analyze_seguridad() {
   # IPv6
   SEC_HOST_IPV6=""
   if command -v dig &>/dev/null; then
-    SEC_HOST_IPV6=$(dig AAAA "$domain" +short 2>/dev/null | grep -v '^$' | head -1 || echo "")
+    # +short incluye la cadena CNAME antes de la dirección — solo líneas con ':' son IPv6
+    SEC_HOST_IPV6=$(dig AAAA "$domain" +short 2>/dev/null | grep ':' | head -1 || echo "")
   else
     SEC_HOST_IPV6=$(curl -sSL --max-time 8 "https://dns.google/resolve?name=${domain}&type=AAAA" 2>/dev/null \
-      | perl -nle 'print $1 if /"data":"([^"]+)"/' | head -1 || echo "")
+      | perl -nle 'print $1 while /"data":"([^"]*:[^"]*)"/g' | head -1 || echo "")
   fi
 
   # Headers
@@ -911,11 +932,14 @@ analyze_seguridad() {
     curl -sSL --max-time 8 "https://dns.google/resolve?name=${domain}&type=CAA" 2>/dev/null \
       | perl -nle 'print $1 if /"data":"([^"]+)"/' | head -1
   fi || echo "")
+  # MX en el dominio del correo (www.x.com → x.com). Solo líneas "prioridad host": con un CNAME
+  # (www → x.com) dig devolvía el destino del alias y se contaba como servidor de correo.
+  local mail_domain; mail_domain=$(_registrable_domain "$domain")
   mx_raw=$(if command -v dig &>/dev/null; then
-    dig MX "$domain" +short 2>/dev/null | head -1
+    dig MX "$mail_domain" +short 2>/dev/null | grep -E '^[0-9]+ ' | head -1
   else
-    curl -sSL --max-time 8 "https://dns.google/resolve?name=${domain}&type=MX" 2>/dev/null \
-      | perl -nle 'print $1 if /"data":"([^"]+)"/' | head -1
+    curl -sSL --max-time 8 "https://dns.google/resolve?name=${mail_domain}&type=MX" 2>/dev/null \
+      | perl -nle 'print $1 if /"data":"([0-9]+ [^"]+)"/' | head -1
   fi || echo "")
   [[ -n "$caa_raw" ]] && SEC_CAA="$caa_raw" || true
   [[ -n "$mx_raw"  ]] && SEC_MX="$mx_raw"   || true
@@ -949,7 +973,8 @@ analyze_seguridad() {
   elif (( SEC_SSL_DAYS == 0  )); then SEC_SSL_EXPIRY_NOTE="🔴 EXPIRADO";                              score=$((score-40))
   elif (( SEC_SSL_DAYS <= 7  )); then SEC_SSL_EXPIRY_NOTE="🔴 Expira en ${SEC_SSL_DAYS}d — URGENTE"; score=$((score-30))
   elif (( SEC_SSL_DAYS <= 30 )); then SEC_SSL_EXPIRY_NOTE="🟠 Expira en ${SEC_SSL_DAYS} días";        score=$((score-15))
-  elif (( SEC_SSL_DAYS <= 90 )); then SEC_SSL_EXPIRY_NOTE="🟡 Expira en ${SEC_SSL_DAYS} días";        score=$((score-5))
+  # ≤90 días es normal (Let's Encrypt emite certificados de 90 días con renovación automática) — sin penalización
+  elif (( SEC_SSL_DAYS <= 90 )); then SEC_SSL_EXPIRY_NOTE="🟡 Expira en ${SEC_SSL_DAYS} días"
   else                                SEC_SSL_EXPIRY_NOTE="🟢 Válido por ${SEC_SSL_DAYS} días"
   fi
 
@@ -1061,17 +1086,31 @@ analyze_ciberseguridad() {
         | perl -nle 'print $1 if /"data":"([^"]+)"/' || echo ""
     fi
   }
-  spf_raw=$(dns_txt_lookup "$domain")
-  dmarc_raw=$(dns_txt_lookup "_dmarc.${domain}")
-  dkim_raw=$(dns_txt_lookup "default._domainkey.${domain}")
-  bimi_raw=$(dns_txt_lookup "default._bimi.${domain}")
+  # El correo se autentica en el dominio registrable, no en el host auditado: con www.x.com
+  # se buscaba _dmarc.www.x.com y DMARC salía ausente aunque x.com lo tuviera (8 de 11 sitios con www).
+  local mail_domain; mail_domain=$(_registrable_domain "$domain")
+  spf_raw=$(dns_txt_lookup "$mail_domain")
+  dmarc_raw=$(dns_txt_lookup "_dmarc.${mail_domain}")
+  bimi_raw=$(dns_txt_lookup "default._bimi.${mail_domain}")
+  # DKIM: el selector lo define el proveedor y no es público. Se prueban los comunes
+  # (Google, Microsoft 365, genéricos, Mailchimp/Mandrill, Zoho, SendGrid, Amazon SES…).
+  # Si ninguno responde no se puede afirmar que falte: queda "No verificable", sin restar puntos.
+  local dkim_raw="" _sel; CYBER_DKIM_SELECTOR=""
+  for _sel in google selector1 selector2 default k1 k2 s1 s2 dkim mail smtp mandrill zoho zmail sendgrid amazonses mxvault; do
+    dkim_raw=$(dns_txt_lookup "${_sel}._domainkey.${mail_domain}" | grep -iE 'v=DKIM1|p=[A-Za-z0-9+/]{20}' | head -1 || true)
+    [[ -n "$dkim_raw" ]] && { CYBER_DKIM_SELECTOR="$_sel"; break; }
+  done
   CYBER_SPF=$(echo "$spf_raw"    | grep -i "v=spf"   | head -1 || echo "AUSENTE")
   CYBER_DMARC=$(echo "$dmarc_raw"| grep -i "v=DMARC" | head -1 || echo "AUSENTE")
-  CYBER_DKIM=$(echo "$dkim_raw"  | grep -i "v=DKIM"  | head -1 || echo "AUSENTE")
+  # Registro encontrado → se normaliza con "v=DKIM1" (algunos proveedores lo omiten)
+  if [[ -n "$dkim_raw" ]]; then
+    CYBER_DKIM="$dkim_raw"; grep -qi "v=DKIM" <<< "$CYBER_DKIM" || CYBER_DKIM="v=DKIM1; ${CYBER_DKIM}"
+  else
+    CYBER_DKIM="No verificable"
+  fi
   CYBER_BIMI=$(echo "$bimi_raw"  | grep -i "v=BIMI"  | head -1 || echo "AUSENTE")
   [[ -z "$CYBER_SPF"   ]] && CYBER_SPF="AUSENTE"
   [[ -z "$CYBER_DMARC" ]] && CYBER_DMARC="AUSENTE"
-  [[ -z "$CYBER_DKIM"  ]] && CYBER_DKIM="AUSENTE"
 
   # U1 — DMARC: penalizar según política real (p=none no protege)
   CYBER_DMARC_POLICY="ausente"
@@ -1104,7 +1143,7 @@ analyze_ciberseguridad() {
   CYBER_MTA_STS=false
   if [[ "$SEC_MX" != "AUSENTE" && -n "${SEC_MX:-}" ]]; then
     local _mta_sts_status
-    _mta_sts_status=$(http_status_noredirect "https://mta-sts.${domain}/.well-known/mta-sts.txt")
+    _mta_sts_status=$(http_status_noredirect "https://mta-sts.${mail_domain}/.well-known/mta-sts.txt")
     [[ "$_mta_sts_status" == "200" ]] && CYBER_MTA_STS=true || score=$((score-5))
   fi
 
@@ -1431,9 +1470,9 @@ analyze_geo() {
     | wc -l | tr -d ' ')
   GEO_DEFINITION_PATTERNS=${GEO_DEFINITION_PATTERNS:-0}
 
-  # M11: ai-plugin.json — manifest para GPT Actions / ChatGPT plugins
+  # ai-plugin.json: los plugins de ChatGPT se cerraron en 2024 — ya no se detecta ni puntúa.
+  # El campo se mantiene en el JSON (false) por compatibilidad con audit-platform.
   GEO_AI_PLUGIN=false
-  [[ "$(http_status_noredirect "${base}/.well-known/ai-plugin.json")" == "200" ]] && GEO_AI_PLUGIN=true || true
 
   # ── Score calculation ──────────────────────────────────────────────────────
   # Access signals (max -33)
@@ -1441,7 +1480,7 @@ analyze_geo() {
   [[ "$GEO_BOT_GEMINI" == false ]]     && score=$((score - 8))
   [[ "$GEO_BOT_CLAUDE" == false ]]     && score=$((score - 5))
   [[ "$GEO_BOT_PERPLEXITY" == false ]] && score=$((score - 3))
-  [[ "$GEO_LLMS_TXT" == false ]]       && score=$((score - 5))
+  # llms.txt no puntúa: ningún motor grande confirma usarlo (se reporta solo como informativo)
 
   # Trust / E-E-A-T signals (max -30)
   [[ "$GEO_PAGE_ABOUT" == false ]]   && score=$((score - 12))
@@ -1451,54 +1490,16 @@ analyze_geo() {
   [[ "$GEO_SCHEMA_ORG" == true && "$GEO_SCHEMA_ORG_NAME_OK" == false ]] && score=$((score - 1))
   [[ "$GEO_SCHEMA_ORG" == true && "$GEO_SCHEMA_SAMAS_EMPTY" == true ]]  && score=$((score - 1))
 
-  # Content signals by site type (max -30)
-  case "$GEO_SITE_TYPE" in
-    ecommerce)
-      [[ "$GEO_SCHEMA_PRODUCT" == false ]] && score=$((score - 15))
-      [[ "$GEO_SCHEMA_REVIEW" == false ]]  && score=$((score - 8))
-      [[ "$GEO_SCHEMA_FAQ" == false ]]     && score=$((score - 4))
-      [[ "$GEO_SCHEMA_SPEAKABLE" == false ]] && score=$((score - 3))
-      ;;
-    blog)
-      [[ "$GEO_SCHEMA_ARTICLE" == false ]] && score=$((score - 15))
-      [[ "$GEO_SCHEMA_FAQ" == false ]]     && score=$((score - 8))
-      [[ "$GEO_SCHEMA_HOWTO" == false ]]   && score=$((score - 4))
-      [[ "$GEO_SCHEMA_SPEAKABLE" == false ]] && score=$((score - 3))
-      ;;
-    landing|onepager)
-      [[ "$GEO_SCHEMA_FAQ" == false ]]     && score=$((score - 12))
-      [[ "$GEO_SCHEMA_ORG" == false ]]     && score=$((score - 8))
-      [[ "$GEO_SCHEMA_SPEAKABLE" == false ]] && score=$((score - 5))
-      [[ "$GEO_SCHEMA_HOWTO" == false ]]   && score=$((score - 5))
-      ;;
-    *)
-      [[ "$GEO_SCHEMA_FAQ" == false ]]     && score=$((score - 12))
-      [[ "$GEO_SCHEMA_ORG" == false ]]     && score=$((score - 8))
-      [[ "$GEO_SCHEMA_ARTICLE" == false ]] && score=$((score - 5))
-      [[ "$GEO_SCHEMA_SPEAKABLE" == false ]] && score=$((score - 5))
-      ;;
-  esac
-  (( GEO_STRUCTURED_PCT < 30 ))  && score=$((score - 3))
-  (( GEO_AUTH_LINKS == 0 ))      && score=$((score - 3))
-  # A6: question headings
-  (( GEO_QUESTION_HEADINGS == 0 )) && score=$((score - 3))
-  # A7: dateModified
-  [[ "$GEO_DATE_MODIFIED" == false ]] && score=$((score - 3))
-  # A8: schema incompleto penaliza menos que ausente
-  [[ "$GEO_SCHEMA_ORG" == true && "$GEO_SCHEMA_ORG_COMPLETE" == false ]]         && score=$((score - 3))
-  [[ "$GEO_SCHEMA_ARTICLE" == true && "$GEO_SCHEMA_ARTICLE_COMPLETE" == false ]] && score=$((score - 2))
-  [[ "$GEO_SCHEMA_FAQ" == true && "$GEO_SCHEMA_FAQ_COMPLETE" == false ]]         && score=$((score - 2))
+  # Organization schema: dice quién es la empresa — señal con respaldo, aplica a todo tipo de sitio
+  [[ "$GEO_SCHEMA_ORG" == false ]] && score=$((score - 8))
+  [[ "$GEO_SCHEMA_ORG" == true && "$GEO_SCHEMA_ORG_COMPLETE" == false ]] && score=$((score - 3))
   # A5: Copilot
   [[ "$GEO_BOT_COPILOT" == false ]] && score=$((score - 3))
-  # M7: noai — penalización si el sitio declara explícitamente no querer ser citado
+  # M7: noai — el sitio declara explícitamente no querer ser usado por IA
   [[ "$GEO_META_NOAI" == true ]] && score=$((score - 15))
-  # M8: citation patterns — señal positiva
-  (( GEO_CITATION_PATTERNS >= 3 )) && score=$((score + 3))
-  # M11: ai-plugin.json — señal positiva
-  [[ "$GEO_AI_PLUGIN" == true ]] && score=$((score + 5))
-  # llms.txt quality diferenciada
-  [[ "$GEO_LLMS_TXT_QUALITY" == "vacio" ]]   && score=$((score - 3))
-  [[ "$GEO_LLMS_TXT_QUALITY" == "parcial" ]]  && score=$((score - 1))
+  # Señales complementarias (FAQPage, HowTo, Speakable, Article, Product, Review, dateModified,
+  # preguntas en H2/H3, contenido estructurado, links autoritativos, patrones de citación) NO puntúan:
+  # su efecto en motores de IA no está comprobado. Se reportan como oportunidades de mejora.
   (( score < 0 )) && score=0
   (( score > 100 )) && score=100
 
@@ -1508,10 +1509,8 @@ analyze_geo() {
   local _cg=100
   [[ "$GEO_BOT_CHATGPT" == false ]] && _cg=$((_cg - 50))
   [[ "$GEO_SCHEMA_FAQ" == false ]]  && _cg=$((_cg - 20))
-  [[ "$GEO_LLMS_TXT" == false ]]    && _cg=$((_cg - 10))
   [[ "$GEO_PAGE_ABOUT" == false ]]  && _cg=$((_cg - 10))
   [[ "$GEO_PAGE_CONTACT" == false ]] && _cg=$((_cg - 10))
-  [[ "$GEO_AI_PLUGIN" == true ]]     && _cg=$((_cg + 10))
   [[ "$GEO_META_NOAI" == true ]]     && _cg=$((_cg - 30))
   (( _cg < 0 )) && _cg=0; (( _cg > 100 )) && _cg=100; GEO_ENGINE_CHATGPT=$_cg
 
@@ -1527,13 +1526,11 @@ analyze_geo() {
 
   local _cl=100
   [[ "$GEO_BOT_CLAUDE" == false ]]         && _cl=$((_cl - 35))
-  [[ "$GEO_LLMS_TXT" == false ]]           && _cl=$((_cl - 20))
   [[ "$GEO_PAGE_ABOUT" == false ]]         && _cl=$((_cl - 18))
   [[ "$GEO_PAGE_CONTACT" == false ]]       && _cl=$((_cl - 10))
   (( GEO_AUTH_LINKS == 0 ))                && _cl=$((_cl - 10))
   [[ "$GEO_AUTHOR_VISIBLE" == false ]]     && _cl=$((_cl - 7))
   (( GEO_CITATION_PATTERNS >= 3 ))         && _cl=$((_cl + 5))
-  [[ "$GEO_LLMS_TXT_QUALITY" == "completo" ]] && _cl=$((_cl + 5))
   [[ "$GEO_META_NOAI" == true ]]           && _cl=$((_cl - 20))
   (( _cl < 0 )) && _cl=0; (( _cl > 100 )) && _cl=100; GEO_ENGINE_CLAUDE=$_cl
 
@@ -1714,30 +1711,85 @@ analyze_legal() {
   local html
   html="$HTML_CACHE"
 
+  # Página ya cargada en Chrome (sin aceptar nada): muchos banners y trackers se inyectan con
+  # JavaScript o desde Google Tag Manager y no están en el HTML estático (p. ej. hilton.com,
+  # betobee.com.co). Se combina con el HTML estático porque algunos sitios bloquean Chrome headless.
+  local dom="" _chrome
+  _chrome=$(_detect_chrome)
+  if [[ -n "$_chrome" ]]; then
+    dom=$(_timeout 45 "$_chrome" --headless --disable-gpu --no-sandbox --virtual-time-budget=8000 \
+      --user-agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
+      --dump-dom "$URL" 2>/dev/null) || dom=""
+  fi
+  # Página de bloqueo anti-bots (p. ej. hilton.com, Akamai/Cloudflare/DataDome): no es el sitio,
+  # analizarla daría resultados falsos. Si la bloquean ambos (curl y Chrome), Legal no es verificable.
+  local _block='<title>[^<]*(page reference code|access denied|attention required|just a moment|are you a robot|request blocked|pardon our interruption|security check)|cf-chl-|_incapsula_resource|px-captcha|captcha-delivery\.com'
+  grep -qiE "$_block" <<< "$dom"  && dom=""  || true
+  grep -qiE "$_block" <<< "$html" && html="" || true
+  LEGAL_DOM_RENDERED=false; (( ${#dom} > 2000 )) && LEGAL_DOM_RENDERED=true
+  LEGAL_BLOCKED=false; [[ "$LEGAL_DOM_RENDERED" == false && ${#html} -lt 2000 ]] && LEGAL_BLOCKED=true
+  local page="${html}"$'\n'"${dom}"
+
   # M13: verificar link real a política, no solo keyword en cualquier texto
   LEGAL_PRIVACY=false
-  echo "$html" | grep -oiE '<a[^>]*href="[^"]*"[^>]*>[^<]*</a>' | grep -qi "privacy\|privacidad\|política de privacidad\|aviso de privacidad" && LEGAL_PRIVACY=true || true
-  [[ "$LEGAL_PRIVACY" == false ]] && echo "$html" | grep -oiE 'href="[^"]*priv[^"]*"' | grep -qi "priv" && LEGAL_PRIVACY=true || true
+  echo "$page" | grep -oiE '<a[^>]*href="[^"]*"[^>]*>[^<]*</a>' | grep -qi "privacy\|privacidad\|política de privacidad\|aviso de privacidad" && LEGAL_PRIVACY=true || true
+  [[ "$LEGAL_PRIVACY" == false ]] && echo "$page" | grep -oiE 'href="[^"]*priv[^"]*"' | grep -qi "priv" && LEGAL_PRIVACY=true || true
 
   LEGAL_TERMS=false
-  echo "$html" | grep -oiE '<a[^>]*href="[^"]*"[^>]*>[^<]*</a>' | grep -qi "terms\|condiciones\|aviso legal\|términos" && LEGAL_TERMS=true || true
-  [[ "$LEGAL_TERMS" == false ]] && echo "$html" | grep -oiE 'href="[^"]*(terms|condicion|legal|tos)[^"]*"' | grep -qi "." && LEGAL_TERMS=true || true
+  echo "$page" | grep -oiE '<a[^>]*href="[^"]*"[^>]*>[^<]*</a>' | grep -qi "terms\|condiciones\|aviso legal\|términos" && LEGAL_TERMS=true || true
+  [[ "$LEGAL_TERMS" == false ]] && echo "$page" | grep -oiE 'href="[^"]*(terms|condicion|legal|tos)[^"]*"' | grep -qi "." && LEGAL_TERMS=true || true
 
-  LEGAL_COOKIES=false
-  echo "$html" | grep -oiE '<a[^>]*href="[^"]*"[^>]*>[^<]*</a>' | grep -qi "cookie" && LEGAL_COOKIES=true || true
-  [[ "$LEGAL_COOKIES" == false ]] && echo "$html" | grep -oiE 'href="[^"]*cookie[^"]*"' | grep -qi "." && LEGAL_COOKIES=true || true
-  [[ "$LEGAL_COOKIES" == false ]] && grep -qi 'gdpr\|rgpd\|consent\|cookieconsent\|cookie-banner\|cookiebot\|onetrust' <<< "$html" && LEGAL_COOKIES=true || true
 
-  LEGAL_GDPR=false;    grep -qi "gdpr\|rgpd\|reglamento.*datos" <<< "$html"           && LEGAL_GDPR=true    || true
+  # Aviso de cookies: tres estados. Antes cualquier enlace con "cookie" (p. ej. a la página de
+  # política) contaba como banner, y los avisos hechos a medida no se detectaban.
+  #   cmp     = plataforma de consentimiento (permite aceptar/rechazar)
+  #   aviso   = aviso informativo propio ("este sitio utiliza cookies…")
+  #   ausente = no detectado (no prueba que no exista: puede haber variantes no contempladas)
+  LEGAL_COOKIE_BANNER="ausente"; LEGAL_COOKIE_REJECT=null
+  if grep -qiE 'cookiebot|onetrust|optanon|cookieyes|cky-consent|complianz|cmplz|borlabs|iubenda|termly|usercentrics|didomi|osano|quantcast|cookie-law-info|cookielawinfo|moove_gdpr|cookie-notice|cookieconsent|klaro|tarteaucitron|clarip|cookieadmin|cookieinformation|trustarc|truste\.com|consentmanager|axeptio|cookiefirst|cookie-script|termsfeed|cookiehub|cookiepro|real-cookie-banner|js\.hs-banner\.com|hs-eu-cookie' <<< "$page"; then
+    LEGAL_COOKIE_BANNER="cmp"; LEGAL_COOKIE_REJECT=true
+  elif grep -qiE '(utiliza|usa|usamos|utilizamos|emplea|empleamos) (las |datos de navegaci[oó]n ?/ ?)?cookies|cookies propias y de terceros|hace uso de cookies|(acepta[rs]?|consiente[s]?) (el )?uso de (las )?cookies|we use cookies|this (site|website) uses cookies|acepta[rs]? (las |nuestra )?(pol[ií]tica de )?cookies|accept (all )?cookies|aceptar (todas las )?cookies' <<< "$page"; then
+    LEGAL_COOKIE_BANNER="aviso"
+    # "Al continuar… aceptas" = consentimiento implícito, sin opción de rechazo
+    grep -qiE 'rechaz|reject|declin|denegar|configurar cookies|preferencias de cookies' <<< "$page" && LEGAL_COOKIE_REJECT=true || LEGAL_COOKIE_REJECT=false
+  fi
+  LEGAL_COOKIES=false; [[ "$LEGAL_COOKIE_BANNER" != "ausente" ]] && LEGAL_COOKIES=true
+  # GTM es un contenedor, no un tracker: lo que carga sí aparece en la página ya cargada.
+  # Se reporta aparte porque, si Chrome no pudo cargar la página, un CMP dentro de GTM no es visible.
+  LEGAL_GTM=false; grep -qiE 'googletagmanager\.com/gtm\.js|GTM-[A-Z0-9]{4,}' <<< "$page" && LEGAL_GTM=true || true
 
+  LEGAL_GDPR=false;    grep -qi "gdpr\|rgpd\|reglamento.*datos" <<< "$page"           && LEGAL_GDPR=true    || true
+
+  # Trackers por su script real (antes "facebook" o "segment" en cualquier texto contaban como tracker)
   LEGAL_TRACKERS=()
-  grep -qiE "google-analytics|gtag\.js|ga\.js|googletagmanager\.com/gtag" <<< "$html" && LEGAL_TRACKERS+=("Google Analytics") || true
-  grep -qi "facebook\|fbevents\|fbq(" <<< "$html"      && LEGAL_TRACKERS+=("Facebook Pixel")   || true
-  grep -qi "hotjar" <<< "$html"                         && LEGAL_TRACKERS+=("Hotjar")           || true
-  grep -qi "mixpanel" <<< "$html"                       && LEGAL_TRACKERS+=("Mixpanel")         || true
-  grep -qi "segment" <<< "$html"                        && LEGAL_TRACKERS+=("Segment")          || true
-  grep -qi "hubspot" <<< "$html"                        && LEGAL_TRACKERS+=("HubSpot")          || true
+  grep -qiE "google-analytics\.com|gtag\.js|googletagmanager\.com/gtag|ga\('create'" <<< "$page" && LEGAL_TRACKERS+=("Google Analytics") || true
+  grep -qiE "connect\.facebook\.net/[^\"']*/fbevents\.js|fbq\(" <<< "$page"     && LEGAL_TRACKERS+=("Facebook Pixel")   || true
+  grep -qiE "static\.hotjar\.com|hotjar\.com/c/hotjar" <<< "$page"              && LEGAL_TRACKERS+=("Hotjar")           || true
+  grep -qiE "cdn\.mxpnl\.com|mixpanel\.init" <<< "$page"                       && LEGAL_TRACKERS+=("Mixpanel")         || true
+  grep -qiE "cdn\.segment\.com" <<< "$page"                                     && LEGAL_TRACKERS+=("Segment")          || true
+  grep -qiE "js\.hs-scripts\.com|js\.hs-analytics\.net" <<< "$page"            && LEGAL_TRACKERS+=("HubSpot")          || true
+  grep -qiE "snap\.licdn\.com" <<< "$page"                                      && LEGAL_TRACKERS+=("LinkedIn Insight") || true
+  grep -qiE "analytics\.tiktok\.com" <<< "$page"                                && LEGAL_TRACKERS+=("TikTok Pixel")     || true
+  grep -qiE "clarity\.ms/tag" <<< "$page"                                        && LEGAL_TRACKERS+=("Microsoft Clarity") || true
+  # Con aviso informativo o sin banner, los trackers se cargan antes de que el usuario acepte.
+  # Con un CMP no se puede verificar (depende de su configuración).
+  LEGAL_TRACKERS_BEFORE=null
+  if (( ${#LEGAL_TRACKERS[@]} > 0 )); then
+    # Sin la página cargada en Chrome, un CMP inyectado por JavaScript no es visible: no se afirma
+    [[ "$LEGAL_COOKIE_BANNER" == "cmp" ]] || [[ "$LEGAL_COOKIE_BANNER" == "ausente" && "$LEGAL_DOM_RENDERED" == false ]] || LEGAL_TRACKERS_BEFORE=true
+  elif [[ "$LEGAL_GTM" == true && "$LEGAL_DOM_RENDERED" == false ]]; then
+    LEGAL_TRACKERS_BEFORE=null   # GTM sin página cargada: lo que inyecta no es visible
+  else
+    LEGAL_TRACKERS_BEFORE=false
+  fi
+  # Riesgo de consentimiento = trackers que se cargan antes de que el usuario acepte
+  LEGAL_COOKIE_RISK=false; [[ "$LEGAL_TRACKERS_BEFORE" == true ]] && LEGAL_COOKIE_RISK=true
   [[ ${#LEGAL_TRACKERS[@]} -eq 0 ]] && LEGAL_TRACKERS=("Ninguno detectado")
+  # El sitio bloqueó el acceso automatizado (curl y Chrome): nada de Legal es verificable
+  if [[ "$LEGAL_BLOCKED" == true ]]; then
+    LEGAL_PRIVACY=null; LEGAL_TERMS=null; LEGAL_TRACKERS_BEFORE=null; LEGAL_COOKIE_RISK=false
+    warn "El sitio bloqueó el acceso automatizado — Legal & Privacidad no verificable"
+  fi
 }
 
 # ─── Score global ─────────────────────────────────────────────────────────────
@@ -1806,7 +1858,8 @@ compute_dimension_contexts() {
   local a_issues=""
   (( ${ACC_IMGS_NO_ALT:-0} > 0 ))          && a_issues="${a_issues}${ACC_IMGS_NO_ALT} imágenes sin alt. "
   [[ "${ACC_ARIA:-false}" != "true" ]]      && a_issues="${a_issues}Sin atributos ARIA. "
-  (( ${ACC_AXE_VIOLATIONS:-0} > 0 ))       && a_issues="${a_issues}${ACC_AXE_VIOLATIONS} violations (axe). "
+  (( ${ACC_AXE_SERIOUS:-0} > 0 ))          && a_issues="${a_issues}${ACC_AXE_SERIOUS} controles de Lighthouse fallan (${ACC_AXE_VIOLATIONS} elementos). "
+  (( ${ACC_PA11Y_ERRORS:-0} > 0 ))         && a_issues="${a_issues}${ACC_PA11Y_ERRORS} errores WCAG (pa11y). "
   (( ${ACC_PA11Y_ERRORS:-0} > 0 ))         && a_issues="${a_issues}${ACC_PA11Y_ERRORS} errores (pa11y). "
   if   (( ${SCORE_ACCESIBILIDAD:-0} >= 90 )); then CTX_ACCESIBILIDAD="Accesibilidad destacada. ${a_issues:-Sin violations detectadas.}"
   elif (( ${SCORE_ACCESIBILIDAD:-0} >= 70 )); then CTX_ACCESIBILIDAD="Accesibilidad aceptable con puntos ciegos. ${a_issues}"
@@ -1886,17 +1939,16 @@ compute_dimension_contexts() {
   local g_issues="" g_bots_blocked=0
   [[ "$GEO_BOT_CHATGPT" == false ]]  && g_issues="${g_issues}GPTBot bloqueado — el sitio es invisible para ChatGPT. " && g_bots_blocked=$((g_bots_blocked+1))
   [[ "$GEO_BOT_GEMINI" == false ]]   && g_issues="${g_issues}Googlebot/Gemini bloqueado. " && g_bots_blocked=$((g_bots_blocked+1))
-  [[ "$GEO_SCHEMA_FAQ" == false ]]   && g_issues="${g_issues}FAQPage schema ausente — ChatGPT y Gemini no pueden citar el contenido. "
-  [[ "$GEO_LLMS_TXT" == false ]]     && g_issues="${g_issues}/llms.txt ausente — la IA no sabe qué páginas priorizar. "
+  [[ "$GEO_SCHEMA_FAQ" == false ]]   && g_issues="${g_issues}Sin preguntas frecuentes estructuradas (FAQPage) — señal complementaria, impacto en IA no comprobado. "
   [[ "$GEO_PAGE_ABOUT" == false ]]   && g_issues="${g_issues}Página de empresa ausente — E-E-A-T débil para la IA. "
   [[ "$GEO_PAGE_CONTACT" == false ]] && g_issues="${g_issues}Página de contacto ausente — reduce credibilidad ante motores de IA. "
   # Prefijo basado en estado real: si hay bots bloqueados, no decir "aparece en ChatGPT"
   if (( g_bots_blocked > 0 )) || (( ${SCORE_GEO:-0} < 50 )); then
-    CTX_GEO="Sitio con visibilidad limitada en IA — potenciales clientes no están encontrando el negocio via ChatGPT, Gemini o Claude. ${g_issues}"
+    CTX_GEO="Preparación baja para buscadores con IA — faltan señales básicas para que asistentes como ChatGPT, Gemini o Claude entiendan quién es el negocio. ${g_issues}"
   elif (( ${SCORE_GEO:-0} >= 75 )); then
-    CTX_GEO="Buena visibilidad en motores de IA. ${g_issues:-Señales de confianza y contenido correctamente configuradas.}"
+    CTX_GEO="Buena preparación para buscadores con IA. ${g_issues:-Señales de confianza y contenido correctamente configuradas.}"
   else
-    CTX_GEO="Los motores de IA tienen acceso pero el sitio raramente es citado — cada búsqueda de IA es una oportunidad perdida. ${g_issues}"
+    CTX_GEO="Preparación media para buscadores con IA — los crawlers tienen acceso, pero faltan señales de confianza o contenido. ${g_issues}"
   fi
 }
 
@@ -2128,7 +2180,7 @@ $([ -n "${SEO_LH_DESKTOP:-}" ] && echo "| Lighthouse SEO 🖥️ Desktop | ✅ $
 |----------|-------|-----------|
 | ChatGPT | **${GEO_ENGINE_CHATGPT}/100** | $([ "${GEO_BOT_CHATGPT}" == "false" ] && echo "❌ Bloqueado — invisible para ChatGPT" || ([ "${GEO_SCHEMA_FAQ}" != "true" ] && echo "⚠️ Acceso OK · Sin preguntas estructuradas" || echo "✅ Bien posicionado")) |
 | Gemini | **${GEO_ENGINE_GEMINI}/100** | $([ "${GEO_PAGE_ABOUT}" == "false" ] && echo "⚠️ Sin página Quiénes somos — E-E-A-T débil" || ([ "${GEO_SCHEMA_FAQ}" != "true" ] && echo "⚠️ Sin preguntas estructuradas para AI Overviews" || echo "✅ Bien posicionado")) |
-| Claude | **${GEO_ENGINE_CLAUDE}/100** | $([ "${GEO_LLMS_TXT}" == "false" ] && echo "⚠️ Sin guía de contenido prioritario" || echo "✅ Bien configurado") |
+| Claude | **${GEO_ENGINE_CLAUDE}/100** | $([ "${GEO_BOT_CLAUDE}" == "false" ] && echo "❌ ClaudeBot bloqueado" || echo "✅ Acceso permitido") |
 | Perplexity | **${GEO_ENGINE_PERPLEXITY}/100** | $([ "${GEO_DATE_VISIBLE}" == "false" ] && echo "⚠️ Sin fecha visible — frescura no verificable" || echo "✅ Acceso y contenido correctos") |
 
 #### Acceso — ¿pueden los buscadores de IA leer el sitio?
@@ -2139,7 +2191,7 @@ $([ -n "${SEO_LH_DESKTOP:-}" ] && echo "| Lighthouse SEO 🖥️ Desktop | ✅ $
 | Gemini puede leer el sitio | $([ "$GEO_BOT_GEMINI" == "true" ] && echo "✅ Sí" || echo "❌ Bloqueado") | Google AI Overviews puede indexar y citar el contenido |
 | Claude puede leer el sitio | $([ "$GEO_BOT_CLAUDE" == "true" ] && echo "✅ Sí" || echo "❌ Bloqueado") | Claude con búsqueda web puede referenciar el sitio |
 | Perplexity puede leer el sitio | $([ "$GEO_BOT_PERPLEXITY" == "true" ] && echo "✅ Sí" || echo "❌ Bloqueado") | Perplexity puede incluir el sitio en resultados en tiempo real |
-| Guía de contenido para IA (/llms.txt) | $([ "$GEO_LLMS_TXT" == "true" ] && echo "✅ Existe" || echo "❌ Ausente") | Indica a los motores de IA qué páginas priorizar |
+| /llms.txt (opcional) | $([ "$GEO_LLMS_TXT" == "true" ] && echo "Existe" || echo "No existe") | Estándar propuesto; ningún motor grande confirma usarlo — informativo |
 | Tipo de sitio detectado | ℹ️ ${GEO_SITE_TYPE} | $(if [ "$GEO_SITE_TYPE" == "ecommerce" ]; then echo "E-commerce detectado — Product schema prioritario"; elif [ "$GEO_SITE_TYPE" == "blog" ]; then echo "Blog detectado — Article schema prioritario"; elif [ "$GEO_SITE_TYPE" == "onepager" ]; then echo "One-pager — toda la auditoría en una sola URL"; else echo "Shopify/WooCommerce: No · Blog: No · SPA: No"; fi) |
 
 #### Confianza — ¿pueden verificar quién está detrás del sitio?
@@ -2181,7 +2233,7 @@ $(
   if [ "$GEO_PAGE_ABOUT_TYPE" != "pagina" ] || [ "$GEO_PAGE_CONTACT_TYPE" != "pagina" ] || \
     [ "$GEO_SCHEMA_ORG_NAME_OK" == "false" ] || [ "$GEO_SCHEMA_SAMAS_EMPTY" == "true" ] || \
     [ "$GEO_BOT_CHATGPT" == "false" ] || [ "$GEO_BOT_GEMINI" == "false" ]; then _has_urgent=true; fi
-  if [ "$GEO_SCHEMA_FAQ" == "false" ] || [ "$GEO_LLMS_TXT" == "false" ]; then _has_important=true; fi
+  if [ "$GEO_SCHEMA_FAQ" == "false" ]; then _has_important=true; fi
   if [ "$GEO_AUTHOR_VISIBLE" == "false" ] || [ "$GEO_DATE_VISIBLE" == "false" ] || \
     [ "$GEO_SCHEMA_SPEAKABLE" == "false" ] || [ $GEO_AUTH_LINKS -eq 0 ] || \
     [ $GEO_STRUCTURED_PCT -lt 40 ]; then _has_medium=true; fi
@@ -2259,20 +2311,6 @@ $(
       echo '> ```'
       echo ""
     fi
-    if [ "$GEO_LLMS_TXT" == "false" ]; then
-      echo "**Crear guía de contenido para IA (/llms.txt)** — *ChatGPT, Claude*"
-      echo "> Archivo emergente que indica a los modelos de IA qué páginas son prioritarias y cuál es el propósito del sitio. Equivalente moderno del sitemap para IA generativa. Ya lo adoptaron OpenAI, Anthropic y Perplexity como estándar de referencia."
-      echo '> ```'
-      echo "> # llms.txt"
-      echo '> > Nombre empresa — descripción en una oración.'
-      echo '> '
-      echo '> ## Páginas principales'
-      echo '> - [Servicios](https://dominio.co/servicios): descripción breve'
-      echo '> - [Quiénes somos](https://dominio.co/nosotros): el equipo y la empresa'
-      echo '> - [Contacto](https://dominio.co/contacto): cómo trabajar con nosotros'
-      echo '> ```'
-      echo ""
-    fi
   fi
 
   if [[ "$_has_medium" == true ]]; then
@@ -2301,7 +2339,7 @@ $(
   fi
 
   if [[ "$_has_urgent" == false && "$_has_important" == false && "$_has_medium" == false ]]; then
-    echo "> ✅ Todas las señales GEO principales están correctamente configuradas. Mantener el llms.txt actualizado con cada cambio relevante del sitio."
+    echo "> ✅ Todas las señales GEO principales están correctamente configuradas."
   fi
 )
 
@@ -2319,7 +2357,7 @@ $(
 | Formularios/Labels | $([ "${ACC_FORMS:-0}" -eq 0 ] || [ "${ACC_LABELS:-0}" -ge "${ACC_FORMS:-0}" ] && echo "✅" || echo "⚠️") | ${ACC_FORMS:-0} forms · ${ACC_LABELS:-0} labels |
 $([ -n "${ACC_LH_MOBILE:-}" ] && echo "| Lighthouse A11y 📱 Mobile | ✅ ${ACC_LH_MOBILE}/100 | — |")
 $([ -n "${ACC_LH_DESKTOP:-}" ] && echo "| Lighthouse A11y 🖥️ Desktop | ✅ ${ACC_LH_DESKTOP}/100 | — |")
-$([ "${ACC_AXE_VIOLATIONS:-0}" -gt 0 ] && echo "| axe-core violations | ⚠️ ${ACC_AXE_VIOLATIONS} | ${ACC_AXE_SERIOUS:-0} críticas/serias |" || echo "| axe-core | ✅ Sin violations | — |")
+$([ "${ACC_AXE_SERIOUS:-0}" -gt 0 ] && echo "| Lighthouse (axe-core) | ⚠️ ${ACC_AXE_SERIOUS} controles fallan | ${ACC_AXE_VIOLATIONS:-0} elementos afectados |" || echo "| Lighthouse (axe-core) | ✅ Sin fallas | — |")
 $([ "${ACC_PA11Y_ERRORS:-0}" -gt 0 ] && echo "| pa11y errores | ⚠️ ${ACC_PA11Y_ERRORS} | ${ACC_PA11Y_WARNINGS:-0} warnings |" || echo "| pa11y | ✅ Sin errores | — |")
 
 **💡 Recomendaciones:**
@@ -2402,14 +2440,14 @@ $([ -n "${SEC_SSLCHECK_RESULT:-}" ] && echo "| ssl-checker | \`${SEC_SSLCHECK_RE
 | security.txt | $([ "$CYBER_SEC_TXT" == "200" ] && echo "✅" || echo "⚠️") | Contacto: ${CYBER_SEC_TXT_CONTACT:-—} |
 | SPF Record | $(echo "$CYBER_SPF" | grep -qi "v=spf" && echo "✅" || echo "⚠️ AUSENTE") | \`${CYBER_SPF:0:60}\` |
 | DMARC Record | $(echo "$CYBER_DMARC" | grep -qi "v=DMARC" && echo "✅" || echo "⚠️ AUSENTE") | \`${CYBER_DMARC:0:60}\` |
-| DKIM Record | $(echo "$CYBER_DKIM" | grep -qi "v=DKIM" && echo "✅" || echo "⚠️ AUSENTE") | — |
+| DKIM Record | $(echo "$CYBER_DKIM" | grep -qi "v=DKIM" && echo "✅ (selector ${CYBER_DKIM_SELECTOR:-—})" || echo "➖ No verificable") | — |
 | BIMI Record | $(echo "$CYBER_BIMI" | grep -qi "v=BIMI" && echo "✅" || echo "➖ AUSENTE") | — |
 | Source maps | $([ "${CYBER_SOURCE_MAPS:-false}" == "true" ] && echo "🔴 Expuestos" || echo "✅ Ocultos") | — |
 
 **💡 Recomendaciones:**
 - $(echo "$CYBER_SERVER" | grep -qiE "[0-9]\.|apache|nginx|iis|php" && echo "🟠 Ocultar versión en header Server — exponer la versión facilita ataques dirigidos" || echo "Server header sin versión ✓")
 - $([ "$CYBER_SEC_TXT" != "200" ] && echo "🟢 Crear \`/.well-known/security.txt\` — permite a investigadores reportar vulnerabilidades de forma responsable" || echo "security.txt presente ✓")
-- $(echo "$CYBER_DKIM" | grep -qi "v=DKIM" || echo "🟡 Configurar DKIM — junto a SPF y DMARC protege al dominio de suplantación de identidad en emails")
+- $(echo "$CYBER_DKIM" | grep -qi "v=DKIM" || echo "🟡 Verificar DKIM con el proveedor de correo — junto a SPF y DMARC protege al dominio de suplantación de identidad en emails")
 - Implementar WAF y realizar pentesting periódico (OWASP Top 10)
 
 ---
@@ -2508,7 +2546,7 @@ $(
 email_score=100
 spf_ok=false;   echo "$CYBER_SPF"   | grep -qi "v=spf"   && spf_ok=true   || email_score=$((email_score-30))
 dmarc_ok=false; echo "$CYBER_DMARC" | grep -qi "v=DMARC" && dmarc_ok=true || email_score=$((email_score-30))
-dkim_ok=false;  echo "$CYBER_DKIM"  | grep -qi "v=DKIM"  && dkim_ok=true  || email_score=$((email_score-25))
+dkim_ok=false;  echo "$CYBER_DKIM"  | grep -qi "v=DKIM"  && dkim_ok=true; [[ "$CYBER_DKIM" == "No verificable" ]] && dkim_ok=null; [[ "$dkim_ok" == false ]] && email_score=$((email_score-25))
 mx_ok=false;    [ "${SEC_MX:-AUSENTE}" != "AUSENTE" ] && mx_ok=true        || email_score=$((email_score-10))
 bimi_ok=false;  echo "$CYBER_BIMI"  | grep -qi "v=BIMI"  && bimi_ok=true  || true
 (( email_score < 0 )) && email_score=0
@@ -2519,7 +2557,7 @@ echo "| Mecanismo | Estado | Valor |"
 echo "|-----------|--------|-------|"
 echo "| SPF | $([ "$spf_ok" == "true" ] && echo "✅" || echo "🔴 AUSENTE") | \`${CYBER_SPF:0:60}\` |"
 echo "| DMARC | $([ "$dmarc_ok" == "true" ] && echo "✅" || echo "🔴 AUSENTE") | \`${CYBER_DMARC:0:60}\` |"
-echo "| DKIM | $([ "$dkim_ok" == "true" ] && echo "✅" || echo "🟠 AUSENTE") | — |"
+echo "| DKIM | $(case "$dkim_ok" in true) echo "✅";; null) echo "➖ No verificable (selector no público)";; *) echo "🟠 AUSENTE";; esac) | — |"
 echo "| MX Records | $([ "$mx_ok" == "true" ] && echo "✅" || echo "🟡 AUSENTE") | \`${SEC_MX:0:50}\` |"
 echo "| BIMI | $([ "$bimi_ok" == "true" ] && echo "✅ Activo" || echo "➖ No configurado") | — |"
 echo ""
@@ -2536,12 +2574,12 @@ fi
 
 | Elemento | Estado | Riesgo |
 |----------|--------|--------|
-| Política de Privacidad | $([ "$LEGAL_PRIVACY" == "true" ] && echo "✅" || echo "❌") | $([ "$LEGAL_PRIVACY" != "true" ] && echo "🔴 GDPR Art.13" || echo "✅ OK") |
-| Términos de Uso | $([ "$LEGAL_TERMS"   == "true" ] && echo "✅" || echo "⚠️") | $([ "$LEGAL_TERMS"   != "true" ] && echo "🟡 Medio"       || echo "✅ OK") |
-| Banner Cookies | $([ "$LEGAL_COOKIES" == "true" ] && echo "✅" || echo "❌") | $([ "$LEGAL_COOKIES" != "true" ] && echo "🟠 ePrivacy"    || echo "✅ OK") |
+| Política de Privacidad | $(case "$LEGAL_PRIVACY" in true) echo "✅";; null) echo "— No verificable";; *) echo "❌";; esac) | $([ "$LEGAL_PRIVACY" == "false" ] && echo "🔴 GDPR Art.13" || echo "—") |
+| Términos de Uso | $(case "$LEGAL_TERMS" in true) echo "✅";; null) echo "— No verificable";; *) echo "⚠️";; esac) | $([ "$LEGAL_TERMS" == "false" ] && echo "🟡 Medio" || echo "—") |
+| Aviso de cookies | $(case "$LEGAL_COOKIE_BANNER" in cmp) echo "✅ Plataforma de consentimiento";; aviso) echo "⚠️ Aviso informativo$([ "$LEGAL_COOKIE_REJECT" == false ] && echo " (sin opción de rechazo)")";; *) echo "❌ No detectado";; esac) | $([ "$LEGAL_COOKIE_RISK" == true ] && echo "🟠 Trackers antes del consentimiento" || echo "✅ OK") |
 | Trackers detectados | — | ${LEGAL_TRACKERS[*]} |
 
-$([ "$LEGAL_PRIVACY" != "true" ] || [ "$LEGAL_COOKIES" != "true" ] && echo "⚠️ **Riesgo legal detectado.** Multas GDPR: hasta 20M€ o 4% de facturación anual." || echo "✅ Señales positivas de cumplimiento. Se recomienda auditoría legal completa.")
+$([ "$LEGAL_BLOCKED" == "true" ] && echo "> El sitio bloqueó el acceso automatizado: esta sección no es verificable." && exit; [ "$LEGAL_PRIVACY" == "false" ] || [ "$LEGAL_COOKIE_RISK" == "true" ] && echo "⚠️ **Riesgo legal detectado.** Las leyes de protección de datos (GDPR para visitantes de la UE, Ley 1581 en Colombia y equivalentes en LATAM) exigen informar y, en varios casos, pedir consentimiento previo." || echo "✅ Señales positivas de cumplimiento.")
 
 ---
 
@@ -2692,13 +2730,12 @@ $(
   [ "${CYBER_DKIM:-AUSENTE}"        == "AUSENTE" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Configurar DKIM | 3 | 2 | Ciberseguridad |"; }
   # GEO
   [ "${GEO_SCHEMA_FAQ:-false}"   != "true" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Implementar FAQPage schema | 4 | 2 | GEO |"; }
-  [ "${GEO_LLMS_TXT:-false}"     != "true" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Crear /llms.txt | 3 | 1 | GEO |"; }
   [ "${GEO_PAGE_ABOUT:-false}"   != "true" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Crear página Quiénes somos | 3 | 2 | GEO |"; }
   [ "${GEO_PAGE_CONTACT:-false}" != "true" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Crear página de contacto | 3 | 1 | GEO |"; }
   [ "${GEO_SCHEMA_ORG_NAME_OK:-false}" == "false" ] && [ "${GEO_SCHEMA_ORG:-false}" == "true" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Corregir nombre empresa en Organization schema | 4 | 1 | GEO |"; }
   # Legal
-  [ "${LEGAL_PRIVACY:-false}"    != "true" ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Publicar política de privacidad | 4 | 2 | Legal |"; }
-  [ "${LEGAL_COOKIES:-false}"    != "true" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Banner cookies GDPR | 3 | 2 | Legal |"; }
+  [ "${LEGAL_PRIVACY:-false}"    == "false" ] && { _p=$((_p+1)); echo "| 🔴 ${_p} | Publicar política de privacidad | 4 | 2 | Legal |"; }
+  [ "${LEGAL_COOKIE_RISK:-false}" == "true" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | Consentimiento de cookies | 3 | 2 | Legal |"; }
   # Accesibilidad
   [ "${ACC_ARIA:-false}"         != "true" ] && { _p=$((_p+1)); echo "| 🟠 ${_p} | ARIA labels en componentes interactivos | 3 | 2 | Accesibilidad |"; }
   (( ${ACC_IMGS_NO_ALT:-0} > 0 ))           && { _p=$((_p+1)); echo "| 🟠 ${_p} | Alt text en ${ACC_IMGS_NO_ALT} imagen(es) | 3 | 2 | Accesibilidad |"; }
@@ -2748,7 +2785,7 @@ fi)
 
 **⚙️ DevOps:** Headers de seguridad: **$([ $SCORE_SEGURIDAD -ge 70 ] && echo "aceptables" || echo "críticos")**. Hosting en **${SEC_HOST_PROVIDER:-desconocido}** (${SEC_HOST_COUNTRY:-?}). $([ "$SEC_HSTS" == "true" ] && echo "HSTS configurado ✓." || echo "HSTS ausente — vulnerabilidad MITM.")
 
-**🔏 Privacidad:** $([ "$LEGAL_PRIVACY" == "true" ] && echo "Política de privacidad detectada." || echo "⚠️ Sin política de privacidad — riesgo GDPR.") Trackers: **${LEGAL_TRACKERS[*]}**. Verificar consentimiento explícito (GDPR Art. 6).
+**🔏 Privacidad:** $(case "$LEGAL_PRIVACY" in true) echo "Política de privacidad detectada.";; null) echo "No verificable (el sitio bloqueó el análisis).";; *) echo "⚠️ Sin política de privacidad — riesgo GDPR.";; esac) Trackers: **${LEGAL_TRACKERS[*]}**. Verificar consentimiento explícito (GDPR Art. 6).
 
 **💰 CRO:** $([ "$UX_CTA" == "true" ] && echo "CTAs presentes." || echo "Sin CTAs claros — pérdida de conversión directa.") Priorizar A/B testing en páginas de alto tráfico.
 
@@ -2776,8 +2813,8 @@ $(
   [ "${GEO_SCHEMA_ORG_NAME_OK:-false}" == "false" ] && [ "${GEO_SCHEMA_ORG:-false}" == "true" ] && _r=$((_r+1)) && echo "| ${_r} | Corregir nombre empresa en Organization schema | GEO | 🟠 Alto | 5 min | Identificación correcta en todos los motores |"
   [ "${GEO_SCHEMA_SAMAS_EMPTY:-true}" == "true" ] && [ "${GEO_SCHEMA_ORG:-false}" == "true" ] && _r=$((_r+1)) && echo "| ${_r} | Agregar sameAs con redes sociales oficiales | GEO | 🟠 Alto | 15 min | Verifica presencia oficial de la empresa |"
   # Legal
-  [ "${LEGAL_COOKIES:-false}"      != "true" ] && _r=$((_r+1)) && echo "| ${_r} | Implementar banner de cookies GDPR | Legal | 🟠 Alto | 1-2h | Elimina riesgo multa hasta €20M |"
-  [ "${LEGAL_PRIVACY:-false}"      != "true" ] && _r=$((_r+1)) && echo "| ${_r} | Publicar política de privacidad | Legal | 🔴 Crítico | 2h | GDPR Art.13 — obligatorio |"
+  [ "${LEGAL_COOKIE_RISK:-false}" == "true" ] && _r=$((_r+1)) && echo "| ${_r} | Implementar consentimiento de cookies que bloquee trackers | Legal | 🟠 Alto | 1-2h | Trackers solo tras aceptar |"
+  [ "${LEGAL_PRIVACY:-false}"      == "false" ] && _r=$((_r+1)) && echo "| ${_r} | Publicar política de privacidad | Legal | 🔴 Crítico | 2h | GDPR Art.13 — obligatorio |"
   # Ciberseguridad email
   [ "$CYBER_DMARC"                 == "AUSENTE" ] && _r=$((_r+1)) && echo "| ${_r} | Configurar DMARC en DNS | Ciberseguridad | 🟠 Alto | 1h | Protege dominio de suplantación de emails |"
   [ "$CYBER_DKIM"                  == "AUSENTE" ] && _r=$((_r+1)) && echo "| ${_r} | Configurar DKIM en servidor de correo | Ciberseguridad | 🟠 Alto | 1-2h | Completa trío SPF+DMARC+DKIM |"
@@ -2785,7 +2822,6 @@ $(
   [ "${GEO_PAGE_ABOUT_TYPE:-ninguna}" != "pagina" ] && _r=$((_r+1)) && echo "| ${_r} | Crear página /nosotros dedicada | GEO | 🟠 Alto | 2h | E-E-A-T: +10 pts GEO Gemini/Claude |"
   [ "${GEO_PAGE_CONTACT_TYPE:-ninguna}" != "pagina" ] && _r=$((_r+1)) && echo "| ${_r} | Crear página /contacto dedicada | GEO | 🟠 Alto | 1h | E-E-A-T: credibilidad ante todos los motores IA |"
   [ "${GEO_SCHEMA_FAQ:-false}"    != "true" ] && _r=$((_r+1)) && echo "| ${_r} | Implementar FAQPage schema | GEO | 🟠 Alto | 2-4h | Principal factor citación ChatGPT + Gemini AI Overviews |"
-  [ "${GEO_LLMS_TXT:-false}"      != "true" ] && _r=$((_r+1)) && echo "| ${_r} | Crear /llms.txt | GEO | 🟠 Alto | 30 min | Guía de contenido para ChatGPT y Claude |"
   # Performance
   [ "${PERF_CDN:-No detectado}"   == "No detectado" ] && _r=$((_r+1)) && echo "| ${_r} | Implementar CDN (Cloudflare Free) | Performance | 🟡 Medio | 1-2h | -30-50% latencia global · +5-10 pts perf |"
   (( ${PERF_WEBP_COUNT:-0} == 0 )) && _r=$((_r+1)) && echo "| ${_r} | Convertir imágenes a WebP/AVIF | Performance | 🟡 Medio | 2-4h | -20-40% tamaño · mejora LCP móvil |"
@@ -2821,7 +2857,7 @@ done
 _crit_count=0
 [ "${SEC_HSTS:-false}"           != "true" ] && _crit_count=$((_crit_count+1))
 [ "${SEC_HTTPS_REDIRECT:-false}" != "true" ] && _crit_count=$((_crit_count+1))
-[ "${LEGAL_PRIVACY:-false}"      != "true" ] && _crit_count=$((_crit_count+1))
+[ "${LEGAL_PRIVACY:-false}"      == "false" ] && _crit_count=$((_crit_count+1))
 [ "${SEC_CSP:-false}"            != "true" ] && _crit_count=$((_crit_count+1))
 [ "${GEO_BOT_CHATGPT:-true}"    == "false" ] && _crit_count=$((_crit_count+1))
 
@@ -2870,11 +2906,10 @@ fi
 # B-R4: construir razón GEO dinámica según qué falta realmente
 local _geo_razones=""
 [ "${GEO_SCHEMA_FAQ:-false}" != "true" ] && _geo_razones="${_geo_razones}preguntas estructuradas (FAQPage schema), "
-[ "${GEO_LLMS_TXT:-false}"   != "true" ] && _geo_razones="${_geo_razones}guía de prioridades (/llms.txt), "
 [ "${GEO_PAGE_ABOUT:-false}" != "true" ] && _geo_razones="${_geo_razones}página de empresa, "
 _geo_razones=$(echo "$_geo_razones" | sed 's/, $//')
-if [ "${GEO_SCHEMA_FAQ:-false}" != "true" ] || [ "${GEO_LLMS_TXT:-false}" != "true" ] || (( SCORE_GEO < 65 )); then
-  echo "- **Visibilidad en IA generativa (GEO ${SCORE_GEO}/100) — oportunidad sin aprovechar.** ChatGPT (${GEO_ENGINE_CHATGPT}/100), Gemini (${GEO_ENGINE_GEMINI}/100), Claude (${GEO_ENGINE_CLAUDE}/100) y Perplexity (${GEO_ENGINE_PERPLEXITY}/100) pueden acceder al sitio pero raramente lo van a citar. ${_geo_razones:+La razón: falta ${_geo_razones}. }Estos elementos son los de mayor impacto/esfuerzo en GEO."
+if [ "${GEO_SCHEMA_FAQ:-false}" != "true" ] || (( SCORE_GEO < 65 )); then
+  echo "- **Preparación para IA generativa (índice estimado ${SCORE_GEO}/100).** Estimación sobre señales técnicas de la página de inicio; no mide menciones reales en ChatGPT, Gemini o Claude. ${_geo_razones:+Falta: ${_geo_razones}.}"
 fi
 
 # B-R3: separar DMARC y DKIM — mencionar solo los que realmente faltan
@@ -2885,19 +2920,17 @@ _email_missing=$(echo "$_email_missing" | sed 's/, $//')
 if [ -n "$_email_missing" ]; then
   echo "- **Email deliverability comprometida.** Sin ${_email_missing}, cualquier persona puede enviar emails haciéndose pasar por el dominio. Phishing, spam y daño reputacional son riesgos reales. Solución: configuración DNS de 1-2 horas."
 fi
-if [ "${LEGAL_COOKIES:-false}" != "true" ]; then
-  echo "- **Riesgo legal GDPR activo.** Sin banner de consentimiento de cookies. El sitio usa trackers (${LEGAL_TRACKERS[*]:-detectados}) sin consentimiento explícito — infracción del Reglamento ePrivacy. Multas de hasta €20M o 4% de facturación anual."
+if [ "${LEGAL_COOKIE_RISK:-false}" == "true" ]; then
+  echo "- **Datos personales.** ${LEGAL_TRACKERS[*]:-Los trackers} se cargan antes de que el visitante acepte cookies$([ "$LEGAL_COOKIE_BANNER" == "aviso" ] && echo " (el aviso actual no permite rechazar)"). Las leyes de protección de datos (GDPR para visitantes de la UE, Ley 1581 en Colombia y equivalentes en LATAM) exigen informar y, en varios casos, pedir consentimiento previo."
 fi
 echo ""
 
 # GEO deep dive
 echo "### 🤖 Visibilidad en IA Generativa — análisis profundo"
 echo ""
-echo "Esta dimensión mide algo diferente al SEO tradicional: no es si Google te indexa, sino si ChatGPT, Gemini, Claude o Perplexity te **citan** cuando un usuario hace una pregunta relacionada con tu negocio."
+echo "Esta dimensión estima qué tan preparado está el sitio para que asistentes como ChatGPT, Gemini, Claude o Perplexity lo entiendan y lo citen. Es una estimación sobre señales técnicas de la **página de inicio**: no mide menciones reales, y las IA pueden consultar cualquier página del sitio."
 echo ""
-echo "Score actual: **${SCORE_GEO}/100**. Los cuatro motores pueden leer el sitio, pero las señales de confianza y contenido estructurado son insuficientes para generar citación frecuente."
-echo ""
-echo "El gap más crítico: **sin FAQPage schema**, las IA no pueden extraer respuestas directas del contenido — que es exactamente lo que necesitan para citar una página. Con 5-10 preguntas y respuestas bien estructuradas, el score GEO puede pasar de ${SCORE_GEO} a 75+ en una sola sesión de trabajo."
+echo "Índice estimado: **${SCORE_GEO}/100**. La base con más respaldo es que los crawlers tengan acceso y que el sitio deje claro quién es el negocio: página de empresa, contacto y Organization schema."
 echo ""
 
 # Proyección
@@ -2912,7 +2945,7 @@ echo "| Seguridad | ${SCORE_SEGURIDAD}/100 | ~70/100 |"
 echo "| GEO (IA Generativa) | ${SCORE_GEO}/100 | ~75/100 |"
 echo "| Email Deliverability | $(( (SCORE_CIBERSEGURIDAD * 45) / 100 ))/100 | ~85/100 |"
 echo ""
-echo "> Esta proyección asume la implementación de: HSTS + headers de seguridad, FAQPage schema, /llms.txt, DMARC + DKIM. No incluye cambios en performance ni diseño."
+echo "> Esta proyección asume la implementación de: HSTS + headers de seguridad, FAQPage schema, DMARC + DKIM. No incluye cambios en performance ni diseño."
 echo ""
 
 # Cierre
@@ -2969,7 +3002,9 @@ generate_json() {
   local email_score=100 spf_bool=false dmarc_bool=false dkim_bool=false mx_bool=false bimi_bool=false
   echo "$CYBER_SPF"   | grep -qi "v=spf"   && spf_bool=true   || email_score=$((email_score-30))
   echo "$CYBER_DMARC" | grep -qi "v=DMARC" && dmarc_bool=true || email_score=$((email_score-30))
-  echo "$CYBER_DKIM"  | grep -qi "v=DKIM"  && dkim_bool=true  || email_score=$((email_score-25))
+  echo "$CYBER_DKIM"  | grep -qi "v=DKIM"  && dkim_bool=true
+  [[ "$CYBER_DKIM" == "No verificable" ]] && dkim_bool=null
+  [[ "$dkim_bool" == false ]] && email_score=$((email_score-25))
   [ "${SEC_MX:-AUSENTE}" != "AUSENTE" ] && mx_bool=true || email_score=$((email_score-10))
   echo "$CYBER_BIMI"  | grep -qi "v=BIMI"  && bimi_bool=true  || true
   (( email_score < 0 )) && email_score=0
@@ -3130,23 +3165,28 @@ generate_json() {
 
   # GEO findings
   _fj=""
-  [[ "${GEO_PAGE_ABOUT:-false}" != "true" ]] && _fa "critico" "pagina_empresa" "404" "Sin página Quiénes somos — E-E-A-T crítico para Gemini y Claude" "Crear página /nosotros o /about con información real de la empresa"
-  [[ "${GEO_PAGE_CONTACT:-false}" != "true" ]] && _fa "critico" "pagina_contacto" "404" "Sin página de contacto — penaliza en todos los motores de IA" "Crear página /contacto o /contact con email, teléfono o formulario"
-  [[ "${GEO_BOT_CHATGPT:-true}" == "false" ]] && _fa "critico" "gptbot_bloqueado" "Disallow: /" "GPTBot bloqueado — el sitio es invisible para ChatGPT" "Eliminar la restricción de GPTBot en robots.txt"
-  [[ "${GEO_BOT_GEMINI:-true}" == "false" ]] && _fa "critico" "googlebot_bloqueado" "Disallow: /" "Googlebot bloqueado — el sitio es invisible para Gemini AI" "Revisar reglas de robots.txt para Googlebot"
-  [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]] && _fa "alto" "faq_schema" "false" "Sin preguntas estructuradas — principal factor de citación en ChatGPT y Gemini" "Implementar FAQPage schema con preguntas y respuestas del negocio"
-  [[ "${GEO_LLMS_TXT:-false}" != "true" ]] && _fa "alto" "llms_txt" "404" "Sin guía de contenido para IA (/llms.txt)" "Crear /llms.txt con descripción y URLs prioritarias del sitio"
-  [[ "${GEO_AUTHOR_VISIBLE:-false}" != "true" ]] && _fa "medio" "autor_visible" "false" "Sin autor visible — reduce credibilidad del contenido ante la IA" "Añadir byline visible y Article schema con autor"
-  [[ "${GEO_DATE_VISIBLE:-false}" != "true" ]] && _fa "medio" "fecha_visible" "false" "Sin fecha visible — Perplexity no puede verificar frescura del contenido" "Usar <time datetime='YYYY-MM-DD'> visible en el HTML"
-  [[ "${GEO_SCHEMA_SPEAKABLE:-false}" != "true" ]] && _fa "medio" "speakable_schema" "false" "Sin fragmentos para voz — Gemini no puede extraer respuestas de voz" "Implementar Speakable schema en secciones clave"
-  (( ${GEO_AUTH_LINKS:-0} == 0 )) && _fa "bajo" "links_autoritativos" "0" "Sin referencias a fuentes reconocidas — reduce confiabilidad ante IA" "Citar fuentes externas verificables (.gov, .edu, publicaciones reconocidas)"
+  # Títulos describen lo verificable; severidad según respaldo (ver módulo GEO de audit-platform)
+  [[ "${GEO_PAGE_ABOUT:-false}" != "true" ]] && _fa "alto" "pagina_empresa" "404" "Sin página «Quiénes somos» — el sitio no deja claro quién está detrás del negocio" "Crear página /nosotros o /about con información real de la empresa"
+  [[ "${GEO_PAGE_CONTACT:-false}" != "true" ]] && _fa "alto" "pagina_contacto" "404" "Sin página de contacto — menos confianza para visitantes y asistentes de IA" "Crear página /contacto o /contact con email, teléfono o formulario"
+  [[ "${GEO_BOT_CHATGPT:-true}" == "false" ]] && _fa "critico" "gptbot_bloqueado" "Disallow: /" "GPTBot bloqueado en robots.txt — ChatGPT no puede leer el sitio" "Eliminar la restricción de GPTBot en robots.txt"
+  [[ "${GEO_BOT_GEMINI:-true}" == "false" ]] && _fa "critico" "googlebot_bloqueado" "Disallow: /" "Googlebot bloqueado en robots.txt — el sitio no puede aparecer en Google ni en Gemini" "Revisar reglas de robots.txt para Googlebot"
+  [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]] && _fa "bajo" "faq_schema" "false" "Sin preguntas frecuentes estructuradas (FAQPage) — señal complementaria" "Implementar FAQPage schema con preguntas y respuestas del negocio"
+  [[ "${GEO_AUTHOR_VISIBLE:-false}" != "true" ]] && _fa "medio" "autor_visible" "false" "Sin autor visible — el contenido no muestra quién lo respalda" "Añadir byline visible y Article schema con autor"
+  [[ "${GEO_DATE_VISIBLE:-false}" != "true" ]] && _fa "medio" "fecha_visible" "false" "Sin fecha visible — no se puede saber si el contenido está actualizado" "Usar <time datetime='YYYY-MM-DD'> visible en el HTML"
+  (( ${GEO_AUTH_LINKS:-0} == 0 )) && _fa "bajo" "links_autoritativos" "0" "Sin enlaces a fuentes reconocidas — el contenido no cita respaldo externo" "Citar fuentes externas verificables (.gov, .edu, publicaciones reconocidas)"
   local JSON_F_GEO="[${_fj}]"
 
   # Legal findings
   _fj=""
-  [[ "${LEGAL_PRIVACY:-false}" != "true" ]] && _fa "critico" "privacy_policy" "false" "Política de privacidad ausente — riesgo GDPR Art.13" "Publicar política de privacidad accesible desde el footer"
-  [[ "${LEGAL_COOKIES:-false}" != "true" ]] && _fa "alto" "cookie_consent" "false" "Sin banner de cookies GDPR — riesgo ePrivacy" "Implementar solución de consentimiento (Cookiebot, OneTrust)"
-  [[ "${LEGAL_TERMS:-false}" != "true" ]] && _fa "medio" "terms" "false" "Términos de uso ausentes" "Publicar términos y condiciones del servicio"
+  [[ "${LEGAL_PRIVACY:-false}" == "false" ]] && _fa "critico" "privacy_policy" "false" "Política de privacidad ausente — riesgo GDPR Art.13" "Publicar política de privacidad accesible desde el footer"
+  if [[ "${LEGAL_COOKIE_RISK:-false}" == "true" ]]; then
+    if [[ "$LEGAL_COOKIE_BANNER" == "aviso" ]]; then
+      _fa "medio" "cookie_consent" "aviso" "Aviso de cookies sin opción de rechazo — los trackers se cargan antes de aceptar" "Usar una plataforma de consentimiento que bloquee los trackers hasta que el usuario acepte"
+    else
+      _fa "alto" "cookie_consent" "ausente" "No se detectó aviso de cookies y hay trackers activos" "Implementar una plataforma de consentimiento que bloquee los trackers hasta que el usuario acepte"
+    fi
+  fi
+  [[ "${LEGAL_TERMS:-false}" == "false" ]] && _fa "medio" "terms" "false" "Términos de uso ausentes" "Publicar términos y condiciones del servicio"
   local JSON_F_LEGAL="[${_fj}]"
 
   # Priority matrix
@@ -3161,9 +3201,9 @@ generate_json() {
   [ "${SEO_TITLE:-}"              == "AUSENTE" ] && _ap "Añadir title tag"                4 1 "seo"
   [ "${SEC_HTTPS_REDIRECT:-false}" != "true"   ] && _ap "Forzar HTTPS redirect"           4 1 "seguridad"
   [ "${SEO_META_DESC:-}"          == "AUSENTE" ] && _ap "Crear meta descriptions"         3 1 "seo"
-  [ "${LEGAL_COOKIES:-false}"      != "true"   ] && _ap "Banner cookies GDPR"             3 2 "legal"
+  [ "${LEGAL_COOKIE_RISK:-false}" == "true"   ] && _ap "Consentimiento de cookies"             3 2 "legal"
   [ "${ACC_ARIA:-false}"           != "true"   ] && _ap "Implementar ARIA labels"         3 2 "accesibilidad"
-  [ "${LEGAL_PRIVACY:-false}"      != "true"   ] && _ap "Publicar política de privacidad" 3 1 "legal"
+  [ "${LEGAL_PRIVACY:-false}"      == "false"   ] && _ap "Publicar política de privacidad" 3 1 "legal"
   [ "${SEO_SITEMAP:-}"             != "200"    ] && _ap "Generar sitemap.xml"             2 1 "seo"
   [ "${SEO_SCHEMA:-false}"         != "true"   ] && _ap "Implementar Schema.org"          2 2 "seo"
   [ "${DIS_FAVICON:-false}"        != "true"   ] && _ap "Agregar favicon"                 1 1 "diseno"
@@ -3193,10 +3233,9 @@ generate_json() {
   [ "$CYBER_SPF"   == "AUSENTE" ] && _at2 "Configurar registro SPF en DNS"
   [ "$CYBER_DMARC" == "AUSENTE" ] && _at2 "Configurar registro DMARC en DNS"
   [ "$CYBER_DKIM"  == "AUSENTE" ] && _at2 "Configurar DKIM en el servidor de correo"
-  [ "${LEGAL_COOKIES:-false}"      != "true"   ] && _at2 "Implementar banner de cookies GDPR"
-  [ "${LEGAL_PRIVACY:-false}"      != "true"   ] && _at2 "Publicar política de privacidad"
+  [ "${LEGAL_COOKIE_RISK:-false}" == "true"   ] && _at2 "Implementar consentimiento de cookies que bloquee trackers"
+  [ "${LEGAL_PRIVACY:-false}"      == "false"   ] && _at2 "Publicar política de privacidad"
   [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]] && _at2 "Implementar FAQPage schema (GEO — ChatGPT/Gemini)"
-  [[ "${GEO_LLMS_TXT:-false}" != "true" ]] && _at2 "Crear /llms.txt con páginas prioritarias (GEO — IA)"
   [[ -z "$_s2" ]] && _at2 "Revisar métricas Core Web Vitals y optimizar LCP"
   [ "${SEO_SCHEMA:-false}"        != "true"    ] && _at3 "Implementar Schema.org (structured data)"
   [ "${CT_PWA_MANIFEST:-false}"   != "true"    ] && _at3 "Crear manifest.json para soporte PWA"
@@ -3248,7 +3287,10 @@ generate_json() {
   persp_ux="$([ "${UX_NAV:-false}" == "true" ] && echo "Navegación estructurada presente." || echo "Falta navegación semántica.") $([ "${UX_CTA:-false}" == "true" ] && echo "CTAs detectables." || echo "CTAs no definidos — impacto directo en conversión.") Recomiendo pruebas con usuarios reales y mapas de calor."
   persp_seo="$([ "${SEO_TITLE:-}" != "AUSENTE" ] && echo "Base técnica de metadatos adecuada." || echo "Requiere trabajo fundamental en metadatos.") $([ "${SEO_SCHEMA:-false}" == "true" ] && echo "Structured data positivo para rich snippets." || echo "Sin Schema.org — visibilidad en Google limitada.")"
   persp_devops="Headers de seguridad: $( (( ${SCORE_SEGURIDAD:-0} >= 70 )) && echo "aceptables" || echo "críticos"). Hosting en ${SEC_HOST_PROVIDER:-desconocido} (${SEC_HOST_COUNTRY:-?}). $([ "${SEC_HSTS:-false}" == "true" ] && echo "HSTS configurado." || echo "HSTS ausente — vulnerabilidad MITM.")"
-  persp_legal="$([ "${LEGAL_PRIVACY:-false}" == "true" ] && echo "Política de privacidad detectada." || echo "Sin política de privacidad — riesgo GDPR.") Trackers: ${LEGAL_TRACKERS[*]:-ninguno}. Verificar consentimiento explícito (GDPR Art. 6)."
+  local _priv_txt="Sin política de privacidad — riesgo GDPR."
+  [[ "${LEGAL_PRIVACY:-false}" == "true" ]] && _priv_txt="Política de privacidad detectada."
+  [[ "${LEGAL_PRIVACY:-false}" == "null" ]] && _priv_txt="No verificable (el sitio bloqueó el análisis)."
+  persp_legal="${_priv_txt} Trackers: ${LEGAL_TRACKERS[*]:-ninguno}. Verificar consentimiento explícito (GDPR Art. 6)."
   persp_cro="$([ "${UX_CTA:-false}" == "true" ] && echo "CTAs presentes." || echo "Sin CTAs claros — pérdida de conversión directa.") Priorizar A/B testing en páginas de alto tráfico."
   persp_product="Score ${SCORE_GLOBAL:-0}/100 — $( (( ${SCORE_GLOBAL:-0} >= 80 )) && echo "producto en buen estado." || (( ${SCORE_GLOBAL:-0} >= 60 )) && echo "deuda técnica acumulada, requiere roadmap de mejora." || echo "deuda técnica crítica, sprint de emergencia recomendado.") OKRs sugeridos: performance, seguridad y UX."
 
@@ -3335,11 +3377,10 @@ generate_json() {
     _sec_missing="${_sec_missing%, }"
     _narr_bra "seguridad" "Seguridad (${SCORE_SEGURIDAD}/100) — headers críticos ausentes: ${_sec_missing}. Cada visitante es vulnerable a ataques de intermediario y clickjacking hasta que esto se corrija."
   fi
-  if [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]] || [[ "${GEO_LLMS_TXT:-false}" != "true" ]]; then
+  if [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]]; then
     local _geo_gap=""
-    [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]] && _geo_gap="${_geo_gap}FAQPage schema ausente — ChatGPT y Gemini no pueden citar respuestas del contenido. "
-    [[ "${GEO_LLMS_TXT:-false}"   != "true" ]] && _geo_gap="${_geo_gap}/llms.txt ausente — la IA no sabe qué páginas priorizar. "
-    _narr_bra "geo" "GEO ${SCORE_GEO}/100 — ChatGPT (${GEO_ENGINE_CHATGPT}/100), Gemini (${GEO_ENGINE_GEMINI}/100), Claude (${GEO_ENGINE_CLAUDE}/100), Perplexity (${GEO_ENGINE_PERPLEXITY}/100). Los motores acceden pero raramente citan. ${_geo_gap}Implementar FAQPage schema y /llms.txt puede mover el score GEO a 75+."
+    [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]] && _geo_gap="${_geo_gap}Sin preguntas frecuentes estructuradas (FAQPage). "
+    _narr_bra "geo" "Preparación para IA: índice estimado ${SCORE_GEO}/100 sobre señales de la página de inicio. ${_geo_gap}Reforzar señales de confianza (empresa, contacto, Organization schema) es la base para que los asistentes entiendan quién es el negocio."
   fi
   if [[ "${CYBER_DMARC:-AUSENTE}" == "AUSENTE" ]] || [[ "${CYBER_DKIM:-AUSENTE}" == "AUSENTE" ]]; then
     local _email_missing=""
@@ -3349,17 +3390,16 @@ generate_json() {
     _email_missing="${_email_missing%, }"
     _narr_bra "email" "Email deliverability en ${email_score:-0}/100 — sin ${_email_missing}, cualquier persona puede enviar correos haciéndose pasar por ${domain}. El dominio es vulnerable a phishing y daño reputacional."
   fi
-  if [[ "${LEGAL_COOKIES:-false}" != "true" ]]; then
+  if [[ "${LEGAL_COOKIE_RISK:-false}" == "true" ]]; then
     local _trackers="${LEGAL_TRACKERS[*]:-trackers detectados}"
-    _narr_bra "legal" "Riesgo GDPR activo — sin banner de consentimiento mientras ${_trackers} está funcionando. Infracción del Reglamento ePrivacy: multas de hasta 20M€ o 4% de facturación anual."
+    _narr_bra "legal" "Datos personales — ${_trackers} se cargan antes de que el visitante acepte cookies. Las leyes de protección de datos (GDPR para visitantes de la UE, Ley 1581 en Colombia y equivalentes en LATAM) exigen informar y, en varios casos, pedir consentimiento previo."
   fi
   [[ -z "$_narr_brechas" ]] && _narr_brechas="{\"tipo\":\"ninguna\",\"texto\":\"Sin brechas críticas detectadas.\"}"
   local json_narr_brechas="[${_narr_brechas}]"
 
   # Narrative blocks — GEO insight
-  local _narr_geo_txt="Mientras el SEO mide si Google te indexa, GEO mide si ChatGPT, Gemini, Claude o Perplexity te citan cuando alguien pregunta sobre tu sector. Score actual: ${SCORE_GEO}/100."
-  [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]] && _narr_geo_txt="${_narr_geo_txt} FAQPage schema ausente — las IA no pueden extraer respuestas del contenido para citarlo."
-  [[ "${GEO_LLMS_TXT:-false}" != "true" ]]   && _narr_geo_txt="${_narr_geo_txt} /llms.txt ausente — el sitio no le indica a la IA qué páginas son prioritarias."
+  local _narr_geo_txt="Mientras el SEO mide si Google te indexa, GEO estima qué tan preparado está el sitio para que asistentes como ChatGPT, Gemini o Perplexity lo entiendan y lo citen. Índice estimado: ${SCORE_GEO}/100, calculado sobre la página de inicio — no mide menciones reales."
+  [[ "${GEO_SCHEMA_FAQ:-false}" != "true" ]] && _narr_geo_txt="${_narr_geo_txt} Sin preguntas frecuentes estructuradas (FAQPage): señal complementaria."
   local json_narr_geo="$(_je "$_narr_geo_txt")"
 
   # Narrative blocks — proyección de mejora
@@ -3402,7 +3442,7 @@ generate_json() {
     "dimensions_run": ${json_dimensions_run},
     "tools_available": {
       "lighthouse": $(_jb "${LH_DONE_MOBILE:-false}"),
-      "axe": $([[ -n "${AXE_CMD:-}" ]] && echo "true" || echo "false"),
+      "axe": $(_jb "${LH_DONE_MOBILE:-false}"),
       "pa11y": $([[ -n "${PA11Y_CMD:-}" ]] && echo "true" || echo "false"),
       "htmlhint": $([[ -n "${HTMLHINT_CMD:-}" ]] && echo "true" || echo "false"),
       "webanalyze": $(command -v webanalyze &>/dev/null && echo "true" || echo "false"),
@@ -3519,8 +3559,9 @@ generate_json() {
     "aria_present": $(_jb "${ACC_ARIA:-false}"), "skip_navigation": $(_jb "${ACC_SKIP:-false}"),
     "forms_count": ${ACC_FORMS:-0}, "labels_count": ${ACC_LABELS:-0},
     "lang_attribute": $(_jb "${CT_LANG:-false}"),
-    "axe":   { "violations": ${ACC_AXE_VIOLATIONS:-0}, "serious": ${ACC_AXE_SERIOUS:-0} },
-    "pa11y": { "errors": ${ACC_PA11Y_ERRORS:-0}, "warnings": ${ACC_PA11Y_WARNINGS:-0} },
+    "axe":   { "violations": ${ACC_AXE_VIOLATIONS:-0}, "serious": ${ACC_AXE_SERIOUS:-0}, "source": "lighthouse" },
+    "lighthouse_failed": ${ACC_LH_FAILED:-[]},
+    "pa11y": { "errors": ${ACC_PA11Y_ERRORS:-0}, "warnings": ${ACC_PA11Y_WARNINGS:-0}, "ran": $(_jb "${ACC_PA11Y_RAN:-false}") },
     "lighthouse": { "mobile": ${ACC_LH_MOBILE:-null}, "desktop": ${ACC_LH_DESKTOP:-null} }
   },
   "seguridad": {
@@ -3536,7 +3577,7 @@ generate_json() {
     "https_redirect": $(_jb "${SEC_HTTPS_REDIRECT:-false}"),
     "tls_old_version": $(_jb "${SEC_TLS_OLD:-false}"),
     "ssl": {
-      "days_remaining": ${ssl_days}, "expiry_note": "$(_je "${SEC_SSL_EXPIRY_NOTE:-}")",
+      "days_remaining": ${ssl_days}, "expires": "$(_je "${SSL_EXPIRES_ISO:-}")", "expiry_note": "$(_je "${SEC_SSL_EXPIRY_NOTE:-}")",
       "issuer": "$(_je "${SSL_ISSUER:-Desconocido}")", "tls_version": "$(_je "${SSL_PROTOCOL:-Desconocido}")",
       "cipher": "$(_je "${SSL_CIPHER:-Desconocido}")", "san": ${json_san}
     },
@@ -3585,8 +3626,10 @@ generate_json() {
     "video_present": $(_jb "${UX_VIDEO:-false}"), "newsletter_signup": $(_jb "${UX_NEWSLETTER:-false}")
   },
   "legal": {
-    "privacy_policy": $(_jb "${LEGAL_PRIVACY:-false}"), "terms": $(_jb "${LEGAL_TERMS:-false}"),
+    "privacy_policy": $([[ "$LEGAL_PRIVACY" == null ]] && printf null || _jb "${LEGAL_PRIVACY:-false}"), "terms": $([[ "$LEGAL_TERMS" == null ]] && printf null || _jb "${LEGAL_TERMS:-false}"),
     "cookie_consent": $(_jb "${LEGAL_COOKIES:-false}"), "gdpr_mentions": $(_jb "${LEGAL_GDPR:-false}"),
+    "cookie_banner": "$(_je "${LEGAL_COOKIE_BANNER:-ausente}")", "cookie_reject": ${LEGAL_COOKIE_REJECT:-null},
+    "trackers_before_consent": ${LEGAL_TRACKERS_BEFORE:-null}, "gtm": $(_jb "${LEGAL_GTM:-false}"), "dom_rendered": $(_jb "${LEGAL_DOM_RENDERED:-false}"), "blocked": $(_jb "${LEGAL_BLOCKED:-false}"),
     "trackers": ${json_trackers}
   },
   "tecnologia": {
