@@ -2,7 +2,7 @@
 # =============================================================================
 # homium-audit — Web Audit Tool for Claude Code
 # Repo: homium-tech/audit
-# Version: 2.0.0
+# Version: 2.0.1
 # =============================================================================
 
 # Sin flags estrictos: compatibilidad macOS/Linux (BSD/GNU)
@@ -55,7 +55,7 @@ HTMLHINT_CMD=$(resolve_cmd "htmlhint" "htmlhint")
 SSLCHECK_CMD=$(resolve_cmd "ssl-checker" "ssl-checker")
 
 # ─── Usage ───────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="2.0.1"
 
 usage() {
   echo -e "${BOLD}homium-audit${RESET} v${SCRIPT_VERSION} — Auditoría profesional de sitios web"
@@ -962,7 +962,7 @@ analyze_seguridad() {
   # Cookies — U4: analizar por cookie; cookies de sesión tienen prioridad
   local cookie_hdr
   cookie_hdr=$(echo "$headers" | grep "set-cookie" || echo "")
-  SEC_COOKIE_SECURE=true; SEC_COOKIE_HTTPONLY=true; SEC_COOKIE_SAMESITE="ausente"
+  SEC_COOKIE_SECURE=true; SEC_COOKIE_HTTPONLY=true; SEC_COOKIE_SAMESITE="sin_cookies"
   if echo "$cookie_hdr" | grep -qi "set-cookie"; then
     local _sess_cookies _all_cookies _target
     _sess_cookies=$(echo "$cookie_hdr" | grep -iE 'set-cookie:[[:space:]]*(PHPSESSID|session|auth|token|jwt|_session|connect\.sid|SESS|sid)[=;]')
@@ -2943,6 +2943,8 @@ generate_json() {
   _jarr() {
     local first=true out="["
     for item in "$@"; do
+      # "${ARR[@]:-}" con array vacío pasa un "" — se omite para emitir []
+      [[ -z "$item" ]] && continue
       [[ "$first" == "true" ]] && first=false || out="${out},"
       out="${out}\"$(_je "$item")\""
     done
@@ -3810,7 +3812,7 @@ main() {
     _auto=$(grep -E '^AUTO_UPLOAD=' "$PLATFORM_CONFIG" | cut -d= -f2 | tr -d '[:space:]"' || echo "")
     [[ "$_auto" == "true" ]] && do_upload=true
   fi
-  [[ "$do_upload" == true ]] && upload_to_platform "$JSON_FILE"
+  if [[ "$do_upload" == true ]]; then upload_to_platform "$JSON_FILE"; fi
 }
 
 # ─── Upload a homium-audit-platform ──────────────────────────────────────────
@@ -3901,7 +3903,7 @@ upload_to_platform() {
     _ask_new_token || return 1
     response=$(_do_post "$json_file")
     http_code=$(printf '%s' "$response" | tail -1)
-    body=$(printf '%s' "$response" | head -n -1)
+    body=$(printf '%s' "$response" | sed '$d')
   fi
 
   # 5. Resultado

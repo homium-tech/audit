@@ -11,7 +11,7 @@ OS_TYPE="linux"
 [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]] && OS_TYPE="windows"
 
 REPO="homium-tech/audit"
-VERSION="2.0.0"
+VERSION="2.0.1"
 INSTALL_DIR="${HOME}/.homium-audit"
 BIN_DIR="${HOME}/.local/bin"
 BRANCH="main"

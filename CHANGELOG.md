@@ -6,6 +6,20 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
 ---
 
+## [2.0.1] — octubre 2026
+
+### Corregido
+
+- **Arrays vacíos serializados como `[""]`** — `_jarr` con `"${ARR[@]:-}"` recibía un string vacío cuando el array no tenía elementos. `api_keys_exposed` y `vibe_signals` salían como `[""]`, y audit-platform mostraba un hallazgo crítico "API keys en bundle JS" vacío en cada reporte. Ahora se omiten los elementos vacíos y se emite `[]`.
+- **SameSite penalizaba sitios sin cookies** — el default `"ausente"` restaba −5 pts de seguridad aunque el sitio no enviara `Set-Cookie`. Nuevo valor `"sin_cookies"` cuando no hay cookies, sin penalización.
+- **Exit code 1 en toda ejecución sin upload** — `main` terminaba con `[[ ... ]] && upload_to_platform`, que devolvía 1 cuando no había upload y rompía el uso en CI/CD.
+- **Reintento de upload tras 401 en macOS** — `head -n -1` no existe en BSD `head`; reemplazado por `sed '$d'`, igual que el primer intento.
+
+### JSON
+- `seguridad.cookies.samesite` — nuevo valor `"sin_cookies"`. audit-platform lo muestra como "Sin cookies" (ok).
+
+---
+
 ## [2.0.0] — agosto 2026
 
 Consolida GEO v2, seguridad complementaria, screenshots de alta calidad y un instalador más robusto en Linux. Sin cambios de schema que rompan compatibilidad con audit-platform — el bump a mayor marca el hito de estabilidad de las 9 dimensiones, no un cambio incompatible.

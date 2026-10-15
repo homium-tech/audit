@@ -3,7 +3,7 @@
 > Herramienta de auditoría web profesional para Claude Code.
 > Analiza sitios web desde **9 dimensiones**, genera reportes Markdown listos para stakeholders y detecta el stack tecnológico completo.
 
-[![Version](https://img.shields.io/badge/versión-2.0.0-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v2.0.0)
+[![Version](https://img.shields.io/badge/versión-2.0.1-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v2.0.1)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Compatible-blueviolet)](https://claude.ai)
 [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-green)](https://www.gnu.org/software/bash/)
@@ -258,7 +258,11 @@ Documentación completa: [INTEGRATION.md](https://github.com/homium-tech/audit-p
 
 Ver historial completo en [CHANGELOG.md](CHANGELOG.md).
 
-### Última versión — v2.0.0
+### Última versión — v2.0.1
+
+- **Fixes de serialización y CI** — arrays vacíos emiten `[]` (antes `[""]`), sitios sin cookies ya no pierden 5 pts por SameSite, exit code 0 cuando no se usa `--upload`, reintento de upload compatible con macOS.
+
+#### v2.0.0
 
 - **GEO v2 completo** — noai/noimageai, citation patterns, calidad real de llms.txt, definition sentences, ai-plugin.json.
 - **Seguridad complementaria** — SRI ratio real, HSTS includeSubDomains+preload, MTA-STS.
