@@ -3,7 +3,7 @@
 > Herramienta de auditoría web profesional para Claude Code.
 > Analiza sitios web desde **9 dimensiones**, genera reportes Markdown listos para stakeholders y detecta el stack tecnológico completo.
 
-[![Version](https://img.shields.io/badge/versión-2.1.0-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v2.1.0)
+[![Version](https://img.shields.io/badge/versión-2.1.1-blue.svg)](https://github.com/homium-tech/audit/releases/tag/v2.1.1)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Compatible-blueviolet)](https://claude.ai)
 [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-green)](https://www.gnu.org/software/bash/)
@@ -258,7 +258,11 @@ Documentación completa: [INTEGRATION.md](https://github.com/homium-tech/audit-p
 
 Ver historial completo en [CHANGELOG.md](CHANGELOG.md).
 
-### Última versión — v2.1.0
+### Última versión — v2.1.1
+
+- **Sin falsos positivos en sitios con soft-404** — archivos y rutas sensibles se validan por contenido, no solo por el código 200; 403/5xx quedan como "no verificable".
+
+#### v2.1.0
 
 - **"No verificable" en vez de afirmar ausencias** — DKIM, privacidad WHOIS, política de privacidad/términos y aviso de cookies devuelven `null` cuando no se pueden comprobar, sin restar puntos.
 - **Correo en el dominio correcto** — SPF, DMARC, MX y MTA-STS se consultan en el dominio registrable (antes en `www.`: DMARC salía ausente en sitios que sí lo tienen); DKIM con selectores comunes.

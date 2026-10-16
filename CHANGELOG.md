@@ -6,6 +6,15 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
 ---
 
+## [2.1.1] — octubre 2026
+
+### Corregido
+
+- **Sitios que responden 200 a cualquier dirección (soft-404)** — el CLI contaba solo el código HTTP. En bubanjireh.com, `/.env`, `/backup.sql` y 23 rutas más salían "expuestas" (−250 pts en Ciberseguridad, hallazgo crítico falso) y `robots.txt`, `sitemap.xml`, `security.txt` y `llms.txt` salían "presentes", aunque todas eran la misma página HTML. Ahora:
+  - archivos (`robots.txt`, `sitemap.xml`, `security.txt`, `llms.txt`, `mta-sts.txt`) cuentan solo si su contenido es el esperado (`User-agent`, `<urlset>`, `Contact:`, `# …`, `version: STSv1`);
+  - rutas sensibles cuentan solo si no son la página genérica del sitio (mismo título y tamaño ±5%); archivos y APIs, además, no pueden ser HTML.
+- **403 / 5xx contaban como "ausente"** — `robots.txt`, `sitemap.xml` y `security.txt` solo restan con 404/410; si el sitio bloquea al analizador queda "no verificable" (antes crowe.com perdía puntos por bloquear el user-agent).
+
 ## [2.1.0] — octubre 2026
 
 Surgen de la revisión módulo a módulo del informe en audit-platform. Detalle y motivos en

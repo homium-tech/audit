@@ -2,7 +2,7 @@
 # =============================================================================
 # homium-audit — Web Audit Tool for Claude Code
 # Repo: homium-tech/audit
-# Version: 2.1.0
+# Version: 2.1.1
 # =============================================================================
 
 # Sin flags estrictos: compatibilidad macOS/Linux (BSD/GNU)
@@ -55,7 +55,7 @@ HTMLHINT_CMD=$(resolve_cmd "htmlhint" "htmlhint")
 SSLCHECK_CMD=$(resolve_cmd "ssl-checker" "ssl-checker")
 
 # ─── Usage ───────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="2.1.0"
+SCRIPT_VERSION="2.1.1"
 
 usage() {
   echo -e "${BOLD}homium-audit${RESET} v${SCRIPT_VERSION} — Auditoría profesional de sitios web"
@@ -190,6 +190,53 @@ http_status_noredirect() {
   curl -sSo /dev/null --max-time "${TIMEOUT:-10}" \
     --user-agent "Mozilla/5.0 (compatible; homium-audit/1.1)" \
     -w "%{http_code}" "$1" 2>/dev/null || echo "000"
+}
+
+# ── Archivos y rutas reales (no soft-404) ────────────────────────────────────
+# Muchos sitios (SPA, CMS) responden 200 con la misma página HTML a CUALQUIER dirección. Contar solo
+# el código daba falsos "presente" (robots.txt, sitemap.xml, security.txt, llms.txt) y falsos
+# "expuesto" (/.env, /backup.sql…: 250 pts menos en Ciberseguridad en bubanjireh.com).
+_UA_AUDIT="Mozilla/5.0 (compatible; homium-audit/1.1)"
+_is_html() { head -c 2000 "$1" | grep -qiE '<!doctype html|<html[ >]|<head[ >]'; }
+
+# file_status URL REGEX [noredirect] → código HTTP; "404" si responde 200 pero el contenido no es el archivo
+file_status() {
+  local url="$1" re="$2" follow="-L" tmp code
+  [[ "${3:-}" == noredirect ]] && follow=""
+  tmp=$(mktemp)
+  code=$(curl -sS $follow -o "$tmp" --max-time "${TIMEOUT:-10}" --user-agent "$_UA_AUDIT" -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+  if [[ "$code" == "200" ]]; then
+    if _is_html "$tmp" || ! head -c 50000 "$tmp" | grep -qiE "$re"; then code="404"; fi
+  fi
+  rm -f "$tmp"; echo "$code"
+}
+
+# Página que el sitio devuelve para una dirección inexistente (si responde 200): título y tamaño
+_SOFT404_TITLE=""; _SOFT404_SIZE=-1
+soft404_baseline() {
+  local tmp code; tmp=$(mktemp)
+  code=$(curl -sS -o "$tmp" --max-time "${TIMEOUT:-10}" --user-agent "$_UA_AUDIT" -w "%{http_code}" "${URL%/}/homium-audit-no-existe-$$" 2>/dev/null || echo "000")
+  if [[ "$code" == "200" ]]; then
+    _SOFT404_SIZE=$(wc -c < "$tmp" | tr -d ' ')
+    _SOFT404_TITLE=$(grep -oiE '<title[^>]*>[^<]*' "$tmp" | head -1)
+  fi
+  rm -f "$tmp"
+}
+
+# path_exposed URL → 0 si la ruta existe de verdad (200 directo y no es la página genérica)
+path_exposed() {
+  local url="$1" tmp code size title
+  tmp=$(mktemp)
+  code=$(curl -sS -o "$tmp" --max-time "${TIMEOUT:-10}" --user-agent "$_UA_AUDIT" -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+  if [[ "$code" != "200" ]]; then rm -f "$tmp"; return 1; fi
+  # Archivos y APIs: si devuelven HTML es la página del sitio, no el archivo
+  if [[ "$url" =~ \.(env|sql|ya?ml|json|zip|bak|production|local|backup)$ || "$url" =~ /api/ ]] && _is_html "$tmp"; then rm -f "$tmp"; return 1; fi
+  # Directorios: igual a la página genérica (mismo título, tamaño ±5%) = soft-404
+  if (( _SOFT404_SIZE >= 0 )); then
+    size=$(wc -c < "$tmp" | tr -d ' '); title=$(grep -oiE '<title[^>]*>[^<]*' "$tmp" | head -1)
+    if [[ "$title" == "$_SOFT404_TITLE" ]] && (( size * 100 >= _SOFT404_SIZE * 95 && size * 100 <= _SOFT404_SIZE * 105 )); then rm -f "$tmp"; return 1; fi
+  fi
+  rm -f "$tmp"; return 0
 }
 
 response_time_ms() {
@@ -775,10 +822,11 @@ analyze_seo() {
   SEO_LAST_MODIFIED=$(curl -sI --max-time "$TIMEOUT" "$URL" 2>/dev/null | grep -i "^last-modified:" | sed 's/[Ll]ast-[Mm]odified:[[:space:]]*//' | xargs 2>/dev/null || echo "")
 
   local base="${URL%/}"
-  SEO_ROBOTS=$(http_status "${base}/robots.txt")
-  SEO_SITEMAP=$(http_status "${base}/sitemap.xml")
-  [[ "$SEO_ROBOTS"  != "200" ]] && score=$((score-10)) || true
-  [[ "$SEO_SITEMAP" != "200" ]] && score=$((score-10)) || true
+  SEO_ROBOTS=$(file_status "${base}/robots.txt" '^[[:space:]]*(user-agent|sitemap|disallow|allow)[[:space:]]*:')
+  SEO_SITEMAP=$(file_status "${base}/sitemap.xml" '<(urlset|sitemapindex)')
+  # Solo resta si no existe (404/410). 403, 5xx o sin respuesta = no verificable (p. ej. bloquea al analizador)
+  [[ "$SEO_ROBOTS"  == "404" || "$SEO_ROBOTS"  == "410" ]] && score=$((score-10)) || true
+  [[ "$SEO_SITEMAP" == "404" || "$SEO_SITEMAP" == "410" ]] && score=$((score-10)) || true
 
   run_lighthouse
   SEO_LH_MOBILE=$(lh_score "seo" "mobile")
@@ -1057,9 +1105,9 @@ analyze_ciberseguridad() {
   # A2 + N3: exposed paths — sin seguir redirects (evita falsos positivos en soft-404)
   local dirs=("/admin" "/backup" "/config" "/uploads" "/.env" "/wp-admin" "/phpinfo.php" "/swagger" "/api-docs" "/api/users" "/api/admin" "/api/config" "/api/keys" "/api/v1/users")
   CYBER_EXPOSED_DIRS=()
+  soft404_baseline
   for d in "${dirs[@]}"; do
-    local st; st=$(http_status_noredirect "${URL%/}${d}")
-    [[ "$st" == "200" ]] && CYBER_EXPOSED_DIRS+=("$d") && score=$((score-10)) || true
+    path_exposed "${URL%/}${d}" && CYBER_EXPOSED_DIRS+=("$d") && score=$((score-10)) || true
   done
   # A2: .git/HEAD — verificar contenido real (sin -L para no seguir redirects)
   local _git_head_content
@@ -1073,14 +1121,16 @@ analyze_ciberseguridad() {
   [[ ${#CYBER_EXPOSED_DIRS[@]} -eq 0 ]] && CYBER_EXPOSED_DIRS=("Ninguno detectado")
 
   local sec_txt_status sec_txt_contact
-  sec_txt_status=$(http_status "${URL%/}/.well-known/security.txt")
+  sec_txt_status=$(file_status "${URL%/}/.well-known/security.txt" '^[[:space:]]*contact[[:space:]]*:')
   CYBER_SEC_TXT="$sec_txt_status"
   if [[ "$sec_txt_status" == "200" ]]; then
     sec_txt_contact=$(fetch_url "${URL%/}/.well-known/security.txt" | grep -i "^contact:" | head -1 | sed 's/Contact:\s*//' | xargs 2>/dev/null) || sec_txt_contact=""
     CYBER_SEC_TXT_CONTACT="${sec_txt_contact:-No especificado}"
-  else
+  elif [[ "$sec_txt_status" == "404" || "$sec_txt_status" == "410" ]]; then
     score=$((score-5))
     CYBER_SEC_TXT_CONTACT="—"
+  else
+    CYBER_SEC_TXT_CONTACT="—"   # 403/5xx/sin respuesta: no verificable, no resta
   fi
 
   CYBER_SPF="No verificable"; CYBER_DMARC="No verificable"
@@ -1152,7 +1202,7 @@ analyze_ciberseguridad() {
   CYBER_MTA_STS=false
   if [[ "$SEC_MX" != "AUSENTE" && -n "${SEC_MX:-}" ]]; then
     local _mta_sts_status
-    _mta_sts_status=$(http_status_noredirect "https://mta-sts.${mail_domain}/.well-known/mta-sts.txt")
+    _mta_sts_status=$(file_status "https://mta-sts.${mail_domain}/.well-known/mta-sts.txt" 'version:[[:space:]]*STSv1' noredirect)
     [[ "$_mta_sts_status" == "200" ]] && CYBER_MTA_STS=true || score=$((score-5))
   fi
 
@@ -1185,8 +1235,7 @@ analyze_ciberseguridad() {
   # M6: Backup files ampliados — sin seguir redirects
   local backup_dirs=("/.env.production" "/.env.local" "/.env.backup" "/database.sql" "/backup.sql" "/db.sql" "/dump.sql" "/wp-config.php.bak" "/config.yml" "/config.yaml" "/credentials.json" "/site.zip" "/backup.zip")
   for d in "${backup_dirs[@]}"; do
-    local st; st=$(http_status_noredirect "${URL%/}${d}")
-    [[ "$st" == "200" ]] && CYBER_EXPOSED_DIRS+=("$d") && score=$((score-10)) || true
+    path_exposed "${URL%/}${d}" && CYBER_EXPOSED_DIRS+=("$d") && score=$((score-10)) || true
   done
 
   # N1: CORS mal configurado — wildcard + credentials = crítico
@@ -1333,7 +1382,7 @@ analyze_geo() {
 
   # llms.txt
   GEO_LLMS_TXT=false
-  [[ "$(http_status "${base}/llms.txt")" == "200" ]] && GEO_LLMS_TXT=true
+  [[ "$(file_status "${base}/llms.txt" '^#')" == "200" ]] && GEO_LLMS_TXT=true
 
   # Schema signals — from SEO_SCHEMA_TYPES (already extracted, zero cost)
   GEO_SCHEMA_FAQ=false;      echo "${SEO_SCHEMA_TYPES:-}" | grep -qi 'FAQPage'                                && GEO_SCHEMA_FAQ=true
@@ -1859,7 +1908,7 @@ compute_dimension_contexts() {
   [[ "${SEO_TITLE:-}" == "AUSENTE" ]]       && s_issues="${s_issues}Sin title tag. "
   [[ "${SEO_META_DESC:-}" == "AUSENTE" ]]   && s_issues="${s_issues}Sin meta description. "
   [[ "${SEO_SCHEMA:-false}" != "true" ]]    && s_issues="${s_issues}Sin Schema.org. "
-  [[ "${SEO_SITEMAP:-}" != "200" ]]         && s_issues="${s_issues}Sin sitemap.xml. "
+  [[ "${SEO_SITEMAP:-}" =~ ^(404|410)$ ]]   && s_issues="${s_issues}Sin sitemap.xml. "
   [[ "${SEO_OG:-false}" != "true" ]]        && s_issues="${s_issues}Sin Open Graph. "
   if   (( ${SCORE_SEO:-0} >= 90 )); then CTX_SEO="Fundamentos SEO sólidos. ${s_issues:-Todos los elementos críticos presentes.}"
   elif (( ${SCORE_SEO:-0} >= 70 )); then CTX_SEO="SEO básico cubierto con algunas brechas. ${s_issues}"
@@ -2000,8 +2049,8 @@ generate_report() {
 
   [[ "$SEO_TITLE"    == "AUSENTE" ]] && rec_seo_title="🔴 CRÍTICO: Añadir \`<title>\` único (30-60 chars)" || rec_seo_title="Title tag presente ✓"
   [[ "$SEO_META_DESC" == "AUSENTE" ]] && rec_seo_meta="🟠 ALTO: Crear meta description (120-160 chars)"   || rec_seo_meta="Meta description presente ✓"
-  [[ "$SEO_ROBOTS"   != "200"     ]] && rec_seo_robots="🟡 MEDIO: Crear robots.txt en la raíz"            || rec_seo_robots="robots.txt encontrado ✓"
-  [[ "$SEO_SITEMAP"  != "200"     ]] && rec_seo_sitemap="🟡 MEDIO: Generar sitemap.xml y registrar en Search Console" || rec_seo_sitemap="sitemap.xml encontrado ✓"
+  [[ "$SEO_ROBOTS"   =~ ^(404|410)$ ]] && rec_seo_robots="🟡 MEDIO: Crear robots.txt en la raíz"            || rec_seo_robots="robots.txt encontrado ✓"
+  [[ "$SEO_SITEMAP"  =~ ^(404|410)$ ]] && rec_seo_sitemap="🟡 MEDIO: Generar sitemap.xml y registrar en Search Console" || rec_seo_sitemap="sitemap.xml encontrado ✓"
   [[ "$SEO_SCHEMA"   != "true"    ]] && rec_seo_schema="🟡 MEDIO: Implementar Schema.org para rich snippets"         || rec_seo_schema="Schema.org implementado ✓"
 
   cat > "$out_file" << MDEOF
@@ -2168,8 +2217,8 @@ $([ -n "${SITE_OG_IMAGE:-}" ] && echo "![Vista previa](${SITE_OG_IMAGE})" || tru
 | Links internos / externos | ℹ️ | ${SEO_INT_LINKS:-0} internos · ${SEO_EXT_LINKS:-0} externos |
 | Palabras en página | ℹ️ | ${SEO_WORD_COUNT:-0} palabras |
 | Última modificación | ℹ️ | ${SEO_LAST_MODIFIED:-Desconocido} |
-| robots.txt | $([ "$SEO_ROBOTS" == "200" ] && echo "✅" || echo "❌") | HTTP ${SEO_ROBOTS} |
-| sitemap.xml | $([ "$SEO_SITEMAP" == "200" ] && echo "✅" || echo "❌") | HTTP ${SEO_SITEMAP} |
+| robots.txt | $([ "$SEO_ROBOTS" == "200" ] && echo "✅" || { [[ "$SEO_ROBOTS" =~ ^(404|410)$ ]] && echo "❌" || echo "— No verificable"; }) | HTTP ${SEO_ROBOTS} |
+| sitemap.xml | $([ "$SEO_SITEMAP" == "200" ] && echo "✅" || { [[ "$SEO_SITEMAP" =~ ^(404|410)$ ]] && echo "❌" || echo "— No verificable"; }) | HTTP ${SEO_SITEMAP} |
 $([ -n "${SEO_LH_MOBILE:-}" ] && echo "| Lighthouse SEO 📱 Mobile | ✅ ${SEO_LH_MOBILE}/100 | — |")
 $([ -n "${SEO_LH_DESKTOP:-}" ] && echo "| Lighthouse SEO 🖥️ Desktop | ✅ ${SEO_LH_DESKTOP}/100 | — |")
 
@@ -2449,7 +2498,7 @@ $([ -n "${SEC_SSLCHECK_RESULT:-}" ] && echo "| ssl-checker | \`${SEC_SSLCHECK_RE
 | Server header | $(echo "$CYBER_SERVER" | grep -qiE "^oculto$" && echo "✅ Oculto" || echo "⚠️ Expuesto") | \`${CYBER_SERVER}\` |
 | X-Powered-By | $(echo "$CYBER_POWERED_BY" | grep -qiE "^oculto$" && echo "✅ Oculto" || echo "⚠️ Expuesto") | \`${CYBER_POWERED_BY}\` |
 | Directorios expuestos | $([ "${CYBER_EXPOSED_DIRS[0]}" == "Ninguno detectado" ] && echo "✅ OK" || echo "🔴 DETECTADOS") | ${CYBER_EXPOSED_DIRS[*]} |
-| security.txt | $([ "$CYBER_SEC_TXT" == "200" ] && echo "✅" || echo "⚠️") | Contacto: ${CYBER_SEC_TXT_CONTACT:-—} |
+| security.txt | $([ "$CYBER_SEC_TXT" == "200" ] && echo "✅" || { [[ "$CYBER_SEC_TXT" =~ ^(404|410)$ ]] && echo "⚠️" || echo "— No verificable"; }) | Contacto: ${CYBER_SEC_TXT_CONTACT:-—} |
 | SPF Record | $(echo "$CYBER_SPF" | grep -qi "v=spf" && echo "✅" || echo "⚠️ AUSENTE") | \`${CYBER_SPF:0:60}\` |
 | DMARC Record | $(echo "$CYBER_DMARC" | grep -qi "v=DMARC" && echo "✅" || echo "⚠️ AUSENTE") | \`${CYBER_DMARC:0:60}\` |
 | DKIM Record | $(echo "$CYBER_DKIM" | grep -qi "v=DKIM" && echo "✅ (selector ${CYBER_DKIM_SELECTOR:-—})" || echo "➖ No verificable") | — |
@@ -2458,7 +2507,7 @@ $([ -n "${SEC_SSLCHECK_RESULT:-}" ] && echo "| ssl-checker | \`${SEC_SSLCHECK_RE
 
 **💡 Recomendaciones:**
 - $(echo "$CYBER_SERVER" | grep -qiE "[0-9]\.|apache|nginx|iis|php" && echo "🟠 Ocultar versión en header Server — exponer la versión facilita ataques dirigidos" || echo "Server header sin versión ✓")
-- $([ "$CYBER_SEC_TXT" != "200" ] && echo "🟢 Crear \`/.well-known/security.txt\` — permite a investigadores reportar vulnerabilidades de forma responsable" || echo "security.txt presente ✓")
+- $([[ "$CYBER_SEC_TXT" =~ ^(404|410)$ ]] && echo "🟢 Crear \`/.well-known/security.txt\` — permite a investigadores reportar vulnerabilidades de forma responsable" || echo "security.txt presente ✓")
 - $(echo "$CYBER_DKIM" | grep -qi "v=DKIM" || echo "🟡 Verificar DKIM con el proveedor de correo — junto a SPF y DMARC protege al dominio de suplantación de identidad en emails")
 - Implementar WAF y realizar pentesting periódico (OWASP Top 10)
 
@@ -2754,7 +2803,7 @@ $(
   # Performance
   [ "${PERF_CDN:-No detectado}"  == "No detectado" ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | Implementar CDN | 3 | 2 | Performance |"; }
   # SEO / Técnico
-  [ "${SEO_SITEMAP:-}"           != "200"  ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | Generar sitemap.xml | 2 | 1 | SEO |"; }
+  [[ "${SEO_SITEMAP:-}" =~ ^(404|410)$ ]] && { _p=$((_p+1)); echo "| 🟡 ${_p} | Generar sitemap.xml | 2 | 1 | SEO |"; }
   [ "${SEO_SCHEMA:-false}"       != "true" ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | Schema.org | 2 | 2 | SEO |"; }
   [ "${DIS_FAVICON:-false}"      != "true" ] && { _p=$((_p+1)); echo "| 🟢 ${_p} | Favicon | 1 | 1 | Diseño |"; }
   [ "${SEC_XCTO:-false}"         != "true" ] && { _p=$((_p+1)); echo "| 🟡 ${_p} | X-Content-Type-Options: nosniff | 2 | 1 | Seguridad |"; }
@@ -3114,8 +3163,8 @@ generate_json() {
   (( ${SEO_H1_COUNT:-0} == 0 )) && _fa "alto" "h1" "0" "Sin H1 — falta señal principal de keyword" "Añadir un único H1 con la keyword principal"
   (( ${SEO_H1_COUNT:-0} > 1 )) && _fa "medio" "h1_multiple" "${SEO_H1_COUNT}" "Múltiples H1 — señal semántica confusa" "Reducir a un único H1 por página"
   [[ "${SEO_OG:-false}" != "true" ]] && _fa "medio" "og_tags" "false" "Sin Open Graph — preview desfavorable en redes" "Añadir og:title, og:description, og:image"
-  [[ "${SEO_ROBOTS:-}" != "200" ]] && _fa "medio" "robots_txt" "${SEO_ROBOTS:-0}" "robots.txt ausente" "Crear robots.txt en la raíz del sitio"
-  [[ "${SEO_SITEMAP:-}" != "200" ]] && _fa "medio" "sitemap_xml" "${SEO_SITEMAP:-0}" "sitemap.xml ausente" "Generar sitemap.xml y registrar en Search Console"
+  [[ "${SEO_ROBOTS:-}" == "404" || "${SEO_ROBOTS:-}" == "410" ]] && _fa "medio" "robots_txt" "${SEO_ROBOTS:-0}" "robots.txt ausente" "Crear robots.txt en la raíz del sitio"
+  [[ "${SEO_SITEMAP:-}" == "404" || "${SEO_SITEMAP:-}" == "410" ]] && _fa "medio" "sitemap_xml" "${SEO_SITEMAP:-0}" "sitemap.xml ausente" "Generar sitemap.xml y registrar en Search Console"
   [[ "${SEO_SCHEMA:-false}" != "true" ]] && _fa "bajo" "schema_org" "false" "Sin Schema.org — sin rich snippets en Google" "Implementar structured data según tipo de contenido"
   local JSON_F_SEO="[${_fj}]"
 
@@ -3146,7 +3195,7 @@ generate_json() {
   echo "${CYBER_SERVER:-}" | grep -qiE "[0-9]\.|apache|nginx|iis|php" && _fa "alto" "server_header" "$CYBER_SERVER" "Versión de servidor expuesta en header Server" "Ocultar versión en configuración del servidor"
   [[ -n "${CYBER_POWERED_BY:-}" && "${CYBER_POWERED_BY}" != "Oculto" ]] && _fa "medio" "powered_by" "$CYBER_POWERED_BY" "X-Powered-By expone tecnología del backend" "Eliminar o suprimir header X-Powered-By"
   [[ "${CYBER_EXPOSED_DIRS[0]:-Ninguno detectado}" != "Ninguno detectado" ]] && _fa "critico" "exposed_paths" "${CYBER_EXPOSED_DIRS[*]}" "Directorios sensibles accesibles públicamente" "Restringir acceso via .htaccess o configuración del servidor"
-  [[ "${CYBER_SEC_TXT:-}" != "200" ]] && _fa "bajo" "security_txt" "${CYBER_SEC_TXT:-404}" "security.txt ausente" "Crear /.well-known/security.txt con contacto de seguridad"
+  [[ "${CYBER_SEC_TXT:-}" == "404" || "${CYBER_SEC_TXT:-}" == "410" ]] && _fa "bajo" "security_txt" "${CYBER_SEC_TXT:-404}" "security.txt ausente" "Crear /.well-known/security.txt con contacto de seguridad"
   [[ "$CYBER_SPF"   == "AUSENTE" ]] && _fa "alto"  "spf"   "AUSENTE" "SPF ausente — dominio susceptible a spoofing" "Configurar registro SPF en DNS"
   [[ "$CYBER_DMARC" == "AUSENTE" ]] && _fa "alto"  "dmarc" "AUSENTE" "DMARC ausente" "Configurar registro DMARC en DNS"
   [[ "$CYBER_DKIM"  == "AUSENTE" ]] && _fa "medio" "dkim"  "AUSENTE" "DKIM ausente" "Configurar DKIM en el servidor de correo"
@@ -3216,7 +3265,7 @@ generate_json() {
   [ "${LEGAL_COOKIE_RISK:-false}" == "true"   ] && _ap "Consentimiento de cookies"             3 2 "legal"
   [ "${ACC_ARIA:-false}"           != "true"   ] && _ap "Implementar ARIA labels"         3 2 "accesibilidad"
   [ "${LEGAL_PRIVACY:-false}"      == "false"   ] && _ap "Publicar política de privacidad" 3 1 "legal"
-  [ "${SEO_SITEMAP:-}"             != "200"    ] && _ap "Generar sitemap.xml"             2 1 "seo"
+  [[ "${SEO_SITEMAP:-}" =~ ^(404|410)$ ]] && _ap "Generar sitemap.xml"             2 1 "seo"
   [ "${SEO_SCHEMA:-false}"         != "true"   ] && _ap "Implementar Schema.org"          2 2 "seo"
   [ "${DIS_FAVICON:-false}"        != "true"   ] && _ap "Agregar favicon"                 1 1 "diseno"
   local JSON_PRIORITY_MATRIX="[${_pm}]"
@@ -3238,8 +3287,8 @@ generate_json() {
   [[ "${GEO_PAGE_CONTACT:-false}" != "true" ]] && _at1 "Crear página de contacto (GEO — E-E-A-T)"
   [[ -z "$_s1" ]] && _at1 "Mantener estándares actuales — sin críticos detectados"
   [ "${SEO_META_DESC:-}"          == "AUSENTE" ] && _at2 "Crear meta descriptions únicas (120-160 chars)"
-  [ "${SEO_ROBOTS:-}"              != "200"    ] && _at2 "Crear robots.txt en la raíz del sitio"
-  [ "${SEO_SITEMAP:-}"             != "200"    ] && _at2 "Generar sitemap.xml y registrar en Search Console"
+  [[ "${SEO_ROBOTS:-}" =~ ^(404|410)$ ]] && _at2 "Crear robots.txt en la raíz del sitio"
+  [[ "${SEO_SITEMAP:-}" =~ ^(404|410)$ ]] && _at2 "Generar sitemap.xml y registrar en Search Console"
   [ "${ACC_ARIA:-false}"           != "true"   ] && _at2 "Implementar atributos ARIA en componentes interactivos"
   (( ${ACC_IMGS_NO_ALT:-0} > 0 )) && _at2 "Añadir atributo alt a ${ACC_IMGS_NO_ALT} imagen(es)"
   [ "$CYBER_SPF"   == "AUSENTE" ] && _at2 "Configurar registro SPF en DNS"
