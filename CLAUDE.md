@@ -335,6 +335,8 @@ Docs completas: `INTEGRATION.md` en el repo de la plataforma.
 
 - **Correo:** SPF/DMARC/BIMI/MX/MTA-STS se consultan en `_registrable_domain "$domain"`, nunca en el host auditado (www). DKIM prueba selectores comunes; sin respuesta → `CYBER_DKIM="No verificable"` (no resta, JSON `dkim: null`).
 - **Legal:** combina `HTML_CACHE` con la página cargada en Chrome (`--dump-dom`) — excepción a "sin requests extra": los banners de cookies y lo que inyecta GTM no están en el HTML estático. Páginas anti-bots se descartan (`LEGAL_BLOCKED`).
+- **Soft-404 (2.1.1):** muchos sitios responden 200 a cualquier dirección. Archivos (`robots.txt`, `sitemap.xml`, `security.txt`, `llms.txt`, `mta-sts.txt`) se validan por contenido con `file_status URL REGEX`; rutas sensibles con `path_exposed` (comparadas con la página genérica de `soft404_baseline`). Solo 404/410 cuentan como "ausente".
+- **Estabilidad de la medición:** audit-platform solo compara auditorías de la misma metodología (`METODOLOGIA_DESDE` en `audit-platform/src/utils/methodology.js`). Un cambio que mueva puntajes es un cambio de metodología: probarlo antes con la batería de sitios de referencia y avisar para subir esa constante. Si cambia una resta de puntaje, actualizar también `audit-platform/src/utils/scoreModel.js`.
 - **"No verificable" ≠ "ausente":** si un dato no se puede comprobar, se emite `null` y no resta puntos. Afirmar una ausencia que no se midió genera hallazgos falsos frente al cliente.
 
 - El flag `--dimensions` está implementado: `should_run()` en línea ~118 filtra qué `analyze_*` corren. El nombre de la dimensión para calidad técnica es `calidad` (no `calidad_tecnica`).
